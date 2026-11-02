@@ -16,7 +16,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_DIR: ${{ runner.temp }}/ppt-ai-v0.3.0
+      RELEASE_DIR: /tmp/ppt-ai-v0.3.0
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify the original successful build
