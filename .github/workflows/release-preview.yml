@@ -1,0 +1,94 @@
+name: Publish unsigned v0.3.0 preview
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-v0.3.0
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == '1979519619/PPT-ai' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_DIR: ${{ runner.temp }}/ppt-ai-v0.3.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify the original successful build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RELEASE_DIR"
+          gh api repos/1979519619/PPT-ai/actions/runs/41477193774 > "$RELEASE_DIR/run.json"
+          gh api repos/1979519619/PPT-ai/actions/artifacts/13156459818 > "$RELEASE_DIR/artifact.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RELEASE_DIR'])
+          run = json.loads((root / 'run.json').read_text())
+          artifact = json.loads((root / 'artifact.json').read_text())
+          expected = 'ae8a4be2fd1cf45eb1cd518a618b0c1c5ad099fa'
+          assert run['conclusion'] == 'success' and run['head_sha'] == expected
+          assert artifact['workflow_run']['id'] == run['id'] and artifact['workflow_run']['head_sha'] == expected
+          assert not artifact['expired']
+          assert artifact['digest'] == 'sha256:29210a48093e719cd372c9c697768b143920128101b854ecf5592d22db6227e5'
+          PY
+      - name: Download and verify the original installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api repos/1979519619/PPT-ai/actions/artifacts/13156459818/zip > "$RELEASE_DIR/artifact.zip"
+          python3 - <<'PY'
+          import hashlib, os, re, zipfile
+          from pathlib import Path
+          root = Path(os.environ['RELEASE_DIR'])
+          def digest(file):
+              with file.open('rb') as stream:
+                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+          assert digest(root / 'artifact.zip') == '29210a48093e719cd372c9c697768b143920128101b854ecf5592d22db6227e5'
+          with zipfile.ZipFile(root / 'artifact.zip') as archive:
+              assert set(archive.namelist()) == {'PPT-AI-Setup-0.3.0.exe', 'SHA256SUMS'}
+              archive.extractall(root)
+          manifest = (root / 'SHA256SUMS').read_text(encoding='ascii').strip()
+          match = re.fullmatch(r'([a-fA-F0-9]{64})  PPT-AI-Setup-0\.3\.0\.exe', manifest)
+          assert match and digest(root / 'PPT-AI-Setup-0.3.0.exe') == match[1].lower()
+          print('Verified original installer SHA256:', match[1].lower())
+          PY
+      - name: Create draft and upload verified assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create v0.3.0 --repo 1979519619/PPT-ai \
+            --target ae8a4be2fd1cf45eb1cd518a618b0c1c5ad099fa \
+            --title 'PPT-AI Classroom v0.3.0 — Unsigned preview' \
+            --notes-file docs/RELEASE_NOTES_0.3.0.md --draft --prerelease --latest=false
+          gh release upload v0.3.0 --repo 1979519619/PPT-ai \
+            "$RELEASE_DIR/PPT-AI-Setup-0.3.0.exe" "$RELEASE_DIR/SHA256SUMS"
+      - name: Verify uploaded assets and publish the pre-release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api repos/1979519619/PPT-ai/releases/tags/v0.3.0 > "$RELEASE_DIR/release.json"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['RELEASE_DIR'])
+          release = json.loads((root / 'release.json').read_text())
+          assert release['draft'] and release['prerelease']
+          assert release['target_commitish'] == 'ae8a4be2fd1cf45eb1cd518a618b0c1c5ad099fa'
+          assets = {asset['name']: asset for asset in release['assets']}
+          assert set(assets) == {'PPT-AI-Setup-0.3.0.exe', 'SHA256SUMS'}
+          for name, asset in assets.items():
+              file = root / name
+              with file.open('rb') as stream:
+                  expected = 'sha256:' + hashlib.file_digest(stream, 'sha256').hexdigest()
+              assert asset['state'] == 'uploaded' and asset['size'] == file.stat().st_size
+              assert asset['digest'] == expected
+          PY
+          gh release edit v0.3.0 --repo 1979519619/PPT-ai --draft=false --prerelease --latest=false
+          echo 'Published unsigned pre-release: https://github.com/1979519619/PPT-ai/releases/tag/v0.3.0' >> "$GITHUB_STEP_SUMMARY"
