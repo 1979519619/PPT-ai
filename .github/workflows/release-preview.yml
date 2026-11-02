@@ -63,17 +63,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release create v0.3.0 --repo 1979519619/PPT-ai \
-            --target ae8a4be2fd1cf45eb1cd518a618b0c1c5ad099fa \
-            --title 'PPT-AI Classroom v0.3.0 — Unsigned preview' \
-            --notes-file docs/RELEASE_NOTES_0.3.0.md --draft --prerelease --latest=false
-          gh release upload v0.3.0 --repo 1979519619/PPT-ai \
-            "$RELEASE_DIR/PPT-AI-Setup-0.3.0.exe" "$RELEASE_DIR/SHA256SUMS"
+          existing=$(gh api repos/1979519619/PPT-ai/releases --jq '.[] | select(.tag_name == "v0.3.0") | .id')
+          if [ -z "$existing" ]; then
+            gh release create v0.3.0 --repo 1979519619/PPT-ai \
+              --target ae8a4be2fd1cf45eb1cd518a618b0c1c5ad099fa \
+              --title 'PPT-AI Classroom v0.3.0 — Unsigned preview' \
+              --notes-file docs/RELEASE_NOTES_0.3.0.md --draft --prerelease --latest=false
+            gh release upload v0.3.0 --repo 1979519619/PPT-ai \
+              "$RELEASE_DIR/PPT-AI-Setup-0.3.0.exe" "$RELEASE_DIR/SHA256SUMS"
+          else
+            echo 'Existing release will be verified before any publication; assets are not overwritten.'
+          fi
       - name: Verify uploaded assets and publish the pre-release
         shell: bash
         run: |
           set -euo pipefail
-          gh api repos/1979519619/PPT-ai/releases/tags/v0.3.0 > "$RELEASE_DIR/release.json"
+          release_id=$(gh api repos/1979519619/PPT-ai/releases --jq '.[] | select(.tag_name == "v0.3.0") | .id')
+          test -n "$release_id"
+          gh api "repos/1979519619/PPT-ai/releases/$release_id" > "$RELEASE_DIR/release.json"
           python3 - <<'PY'
           import hashlib, json, os
           from pathlib import Path
