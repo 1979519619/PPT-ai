@@ -1,0 +1,94 @@
+{
+  "name": "ppt-ai",
+  "version": "0.3.0",
+  "private": true,
+  "description": "PPT-AI 课堂助手",
+  "author": "PPT-AI",
+  "main": "m1/main.js",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "katex": "^0.19.1",
+    "koffi": "^3.3.5",
+    "opencc-js": "^1.4.2"
+  },
+  "devDependencies": {
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.pptai.classroom",
+    "productName": "PPT-AI Classroom",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "m1/**/*",
+      "!m1/out/**/*",
+      "!m1/package.json",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/koffi/**"
+    ],
+    "extraResources": [
+      {
+        "from": "asr",
+        "to": "asr"
+      },
+      {
+        "from": "m1/detector.ps1",
+        "to": "detector.ps1"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PPT-AI 课堂助手",
+      "artifactName": "PPT-AI-Setup-${version}.${ext}",
+      "deleteAppDataOnUninstall": true,
+      "license": "../LICENSE",
+      "runAfterFinish": false,
+      "include": "build/installer.nsh"
+    },
+    "extraFiles": [
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE.txt"
+      },
+      {
+        "from": "../NOTICE",
+        "to": "NOTICE.txt"
+      },
+      {
+        "from": "../PRIVACY.md",
+        "to": "PRIVACY.md"
+      },
+      {
+        "from": "../third_party/licenses",
+        "to": "third-party-licenses"
+      }
+    ],
+    "electronVersion": "45.1.0",
+    "electronDist": "node_modules/electron/dist"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --x64",
+    "test": "node --test ../tests/*.test.cjs"
+  }
+}

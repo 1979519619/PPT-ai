@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'; font-src 'self' data:"><style>
+*{box-sizing:border-box}
+body{margin:0;font:14px/1.6 "Microsoft YaHei",sans-serif;background:#0f172a;color:#e5e7eb;padding:16px}
+h2{margin:0 0 12px;font-size:18px}
+section{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:12px;margin-bottom:12px}
+h3{margin:0 0 8px;font-size:14px;color:#93c5fd}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+input[type=password],select{background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:7px;padding:7px;font:14px "Microsoft YaHei",sans-serif}
+input[type=password]{flex:1;min-width:300px}
+button{padding:7px 12px;border:0;border-radius:7px;background:#374151;color:#e5e7eb;cursor:pointer}
+button.p{background:#2563eb;color:#fff}
+#level{height:10px;background:#0b1220;border-radius:5px;overflow:hidden;margin-top:8px;border:1px solid #1f2937}
+#level > i{display:block;height:100%;width:0;background:#22c55e;transition:width .05s}
+#msg{font-size:12px;color:#9ca3af;margin-top:6px;min-height:16px}
+.ok{color:#86efac}.bad{color:#fca5a5}
+#asrText{white-space:pre-wrap;background:#0b1220;border-radius:7px;padding:8px;margin-top:8px;min-height:40px}
+#asrMeta{font-size:12px;color:#9ca3af;margin-top:4px}
+code{background:#0b1220;padding:1px 5px;border-radius:4px}
+</style></head><body>
+<h2>PPT-AI 设置</h2>
+
+<section>
+  <h3>DeepSeek API Key</h3>
+  <div id="keyStatus" style="margin-bottom:8px">检查中…</div>
+  <div class="row">
+    <input id="key" type="password" placeholder="粘贴 sk-... 后点保存（不会回显、不会写日志）">
+    <button class="p" id="saveKey">保存</button>
+    <button id="testKey">测试连接</button>
+  </div>
+  <div id="msg"></div>
+</section>
+
+<section>
+  <h3>模型与本地识别</h3>
+  <div id="modelInfo"></div>
+  <div class="row" style="margin-top:8px"><button id="openLogs">打开日志目录</button></div>
+</section>
+
+<section>
+  <h3>麦克风测试</h3>
+  <div class="row">
+    <select id="micSel" style="min-width:320px"></select>
+    <button class="p" id="testMic">开始测试（3 秒）</button>
+    <button id="play">回放</button>
+  </div>
+  <div id="level"><i></i></div>
+  <div id="asrText"></div>
+  <div id="asrMeta"></div>
+</section>
+
+<section>
+  <h3>数据流与快捷键</h3>
+  <div id="dataNote"></div>
+  <div id="hotkeys" style="margin-top:8px"></div>
+</section>
+
+<div class="row" style="justify-content:flex-end">
+  <button id="close">关闭</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let stream = null, audioCtx = null, analyser = null, raf = null, mr = null, chunks = [], lastBlob = null;
+
+function setMsg(t, ok){ $('msg').textContent = t; $('msg').className = ok === true ? 'ok' : ok === false ? 'bad' : ''; }
+function setAsr(t, meta){ $('asrText').textContent = t || ''; $('asrMeta').textContent = meta || ''; }
+
+async function loadInfo(){
+  const info = await window.m1.settingsInfo();
+  $('keyStatus').innerHTML = info.hasKey
+    ? '已保存（DPAPI 加密）：<span class="ok">可读取，连接状态请点击测试连接</span>'
+    : '<span class="bad">未配置 Key</span>';
+  $('modelInfo').innerHTML = `云端模型：<code>${info.model}</code>；本地识别：<code>${info.asrModel}</code>（${info.asrMB} MB）<br>设置文件：<code>${info.settingsPath}</code>`;
+  $('dataNote').innerHTML = '发送给 DeepSeek：识别后的文字 + 圈选区域图片（最多 5 张）。<br>不发送：课堂音频（本机识别）、完整屏幕、问答历史（默认不落盘）。';
+  $('hotkeys').innerHTML = Object.entries(info.hotkeys).map(([k,v]) => `<code>${v}</code> ${k}`).join('　');
+  await loadMics();
+}
+
+async function loadMics(){
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const mics = devs.filter(d => d.kind === 'audioinput');
+    const sel = $('micSel');
+    sel.innerHTML = '';
+    for (const d of mics) {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || ('麦克风 ' + (sel.length + 1));
+      sel.appendChild(o);
+    }
+    if (!mics.length) { const o = document.createElement('option'); o.textContent = '未找到麦克风'; sel.appendChild(o); }
+  } catch (e) { setMsg('枚举麦克风失败：' + e.message, false); }
+}
+
+async function openMic(){
+  const id = $('micSel').value;
+  const audio = id ? { deviceId: { exact: id }, channelCount: 1, echoCancellation: true, noiseSuppression: true } : { channelCount: 1 };
+  stream = await navigator.mediaDevices.getUserMedia({ audio });
+}
+
+function startLevel(){
+  audioCtx = new AudioContext();
+  const src = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 512;
+  src.connect(analyser);
+  const data = new Uint8Array(analyser.fftSize);
+  const draw = () => {
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum += v*v; }
+    const rms = Math.sqrt(sum/data.length);
+    $('level').firstElementChild.style.width = Math.min(100, Math.round(rms*300)) + '%';
+    raf = requestAnimationFrame(draw);
+  };
+  draw();
+}
+function stopLevel(){
+  if (raf) cancelAnimationFrame(raf); raf = null;
+  if (audioCtx) { audioCtx.close().catch(()=>{}); audioCtx = null; }
+  if (stream) { stream.getTracks().forEach(t=>t.stop()); stream = null; }
+}
+
+async function toWav(blob){
+  const ab = await blob.arrayBuffer();
+  const ac = new AudioContext();
+  const audio = await ac.decodeAudioData(ab);
+  await ac.close();
+  const target = 16000;
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(audio.duration*target)), target);
+  const src = off.createBufferSource(); src.buffer = audio; src.connect(off.destination); src.start();
+  const rendered = await off.startRendering();
+  const samples = rendered.getChannelData(0);
+  const len = samples.length;
+  const buf = new ArrayBuffer(44 + len*2), v = new DataView(buf);
+  const ws = (o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i,s.charCodeAt(i)); };
+  ws(0,'RIFF'); v.setUint32(4,36+len*2,true); ws(8,'WAVE'); ws(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,target,true); v.setUint32(28,target*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+  ws(36,'data'); v.setUint32(40,len*2,true);
+  let o=44; for(let i=0;i<len;i++){ let s=Math.max(-1,Math.min(1,samples[i])); v.setInt16(o, s<0? s*0x8000 : s*0x7FFF, true); o+=2; }
+  const u = new Uint8Array(buf); let b=''; for(let i=0;i<u.length;i+=0x8000) b += String.fromCharCode.apply(null,u.subarray(i,i+0x8000));
+  return btoa(b);
+}
+
+$('testMic').onclick = () => runMicTest();
+async function runMicTest(){
+  try {
+    setMsg(''); setAsr('', '录音 3 秒…');
+    stopLevel();
+    await openMic();
+    startLevel();
+    chunks = [];
+    mr = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+    mr.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    mr.onstop = async () => {
+      stopLevel();
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      lastBlob = blob;
+      try {
+        if (blob.size < 1000) { setAsr('', '录音太短'); return; }
+        const t0 = performance.now();
+        const res = await window.m1.asr(await toWav(blob));
+        const ms = Math.round(performance.now() - t0);
+        if (!res.ok) { setAsr('', '识别失败：' + (res.error || '')); return; }
+        setAsr(res.text || '（空）', `识别耗时 ${ms} ms`);
+      } catch (e) { setAsr('', '识别异常：' + e.message); }
+      finally { busy(false); }
+    };
+    mr.start();
+    busy(true);
+    setTimeout(() => { try { mr.stop(); } catch(e){} }, 3000);
+  } catch (e) { setMsg('麦克风不可用：' + e.message, false); stopLevel(); busy(false); }
+}
+function busy(b){ $('testMic').disabled = b; $('testMic').textContent = b ? '录音中…' : '开始测试（3 秒）'; }
+
+$('play').onclick = () => { if (!lastBlob) { setMsg('还没有录音', false); return; } const a = new Audio(URL.createObjectURL(lastBlob)); a.play(); };
+
+$('saveKey').onclick = async () => {
+  const k = $('key').value.trim();
+  if (!k) { setMsg('请输入 Key', false); return; }
+  const r = await window.m1.saveKey(k);
+  if (r.ok) { $('key').value = ''; setMsg('已加密保存', true); loadInfo(); }
+  else setMsg('保存失败：' + r.error, false);
+};
+$('testKey').onclick = async () => {
+  setMsg('测试中…');
+  const r = await window.m1.testKey($('key').value.trim());
+  if (r.ok) setMsg('连接成功；模型：' + (r.models || []).join(', ') + (r.hasFlash ? '（deepseek-flash 可用）' : ''), true);
+  else setMsg('连接失败：' + r.error, false);
+};
+$('openLogs').onclick = () => window.m1.openLogs();
+$('close').onclick = () => window.close();
+loadInfo();
+</script>
+</body></html>

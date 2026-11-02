@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'; font-src 'self' data:"><style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000;cursor:crosshair;user-select:none}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+#bar{position:absolute;left:50%;top:14px;transform:translateX(-50%);z-index:10;background:rgba(17,24,39,.94);
+color:#e5e7eb;font:14px "Microsoft YaHei",sans-serif;padding:8px 12px;border-radius:10px;display:flex;gap:8px;align-items:center;white-space:nowrap}
+button{border:0;border-radius:6px;padding:5px 10px;background:#374151;color:#e5e7eb;cursor:pointer;font-size:13px}
+button.p{background:#2563eb;color:#fff}
+#cnt{color:#93c5fd;font-weight:700}
+</style></head><body>
+<canvas id="bg"></canvas><canvas id="fg"></canvas>
+<div id="bar">
+  <span>画圈后松手；可画多个（最多 5 圈）；<b>Enter</b> 完成 / <b>Ctrl+Z</b> 撤销 / <b>Esc</b> 取消</span>
+  <span id="cnt">0 / 5 圈</span>
+  <button id="undo">撤销</button><button id="clear">清空</button>
+  <button class="p" id="done">完成</button><button id="cancel">取消</button>
+</div>
+<script>
+const MAX_LOOPS = 5;
+const bg = document.getElementById('bg'), fg = document.getElementById('fg');
+const bctx = bg.getContext('2d'), fctx = fg.getContext('2d');
+const cntEl = document.getElementById('cnt');
+let img = null, loops = [], cur = null, drawing = false;
+let view = { scale: 1, dx: 0, dy: 0 };
+const dpr = window.devicePixelRatio || 1;
+
+function clientW(){ return document.documentElement.clientWidth || innerWidth; }
+function clientH(){ return document.documentElement.clientHeight || innerHeight; }
+
+function sizeCanvas(){
+  const cw = clientW(), ch = clientH();
+  for (const c of [bg, fg]) { c.width = Math.round(cw * dpr); c.height = Math.round(ch * dpr); }
+  bctx.setTransform(dpr,0,0,dpr,0,0);
+  fctx.setTransform(dpr,0,0,dpr,0,0);
+  if (img) {
+    const scale = Math.min(cw / img.naturalWidth, ch / img.naturalHeight);
+    const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
+    view = { scale, dx: (cw - dw) / 2, dy: (ch - dh) / 2 };
+    bctx.fillStyle = '#000'; bctx.fillRect(0, 0, cw, ch);
+    bctx.drawImage(img, view.dx, view.dy, dw, dh);
+  }
+  redraw();
+  window.m1.log(`LASSO_VIEW client=${cw}x${ch} dpr=${dpr} img=${img ? img.naturalWidth + 'x' + img.naturalHeight : '?'} fit=${JSON.stringify(view)}`);
+}
+function redraw(){
+  const cw = clientW(), ch = clientH();
+  fctx.clearRect(0,0,cw,ch);
+  fctx.lineWidth = 3; fctx.strokeStyle = '#2563eb'; fctx.fillStyle = 'rgba(37,99,235,.12)';
+  for (const loop of loops) drawLoop(loop, true);
+  if (cur && cur.length > 1) drawLoop(cur, false);
+  cntEl.textContent = loops.length + ' / ' + MAX_LOOPS + ' 圈';
+}
+function drawLoop(pts, closed){
+  if (pts.length < 2) return;
+  fctx.beginPath(); fctx.moveTo(pts[0].x, pts[0].y);
+  for (let i=1;i<pts.length;i++) fctx.lineTo(pts[i].x, pts[i].y);
+  if (closed) { fctx.closePath(); fctx.fill(); }
+  fctx.stroke();
+}
+fg.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  if (loops.length >= MAX_LOOPS) return;
+  drawing = true; cur = [{x:e.clientX, y:e.clientY}];
+  fg.setPointerCapture(e.pointerId);
+});
+fg.addEventListener('pointermove', e => {
+  if (!drawing || !cur) return;
+  const p = cur[cur.length-1];
+  if (Math.hypot(e.clientX-p.x, e.clientY-p.y) < 3) return;
+  cur.push({x:e.clientX, y:e.clientY});
+  redraw();
+});
+fg.addEventListener('pointerup', () => {
+  if (!drawing) return;
+  drawing = false;
+  if (cur && cur.length >= 3 && loops.length < MAX_LOOPS) loops.push(cur);
+  cur = null; redraw();
+});
+fg.addEventListener('dblclick', () => complete());
+
+document.getElementById('undo').onclick = () => { loops.pop(); redraw(); };
+document.getElementById('clear').onclick = () => { loops = []; redraw(); };
+document.getElementById('cancel').onclick = () => window.m1.lassoCancel();
+document.getElementById('done').onclick = () => complete();
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); complete(); }
+  else if (e.key === 'Escape') { e.preventDefault(); window.m1.lassoCancel(); }
+  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); loops.pop(); redraw(); }
+  else if (e.key.toLowerCase() === 'c') { loops = []; redraw(); }
+});
+
+function cropLoop(loop, index){
+  const pts = loop.map(p => ({ x: (p.x - view.dx) / view.scale, y: (p.y - view.dy) / view.scale }));
+  const xs = pts.map(p=>p.x), ys = pts.map(p=>p.y);
+  let x0 = Math.max(0, Math.floor(Math.min(...xs)) - 8), y0 = Math.max(0, Math.floor(Math.min(...ys)) - 8);
+  let x1 = Math.min(img.naturalWidth, Math.ceil(Math.max(...xs)) + 8), y1 = Math.min(img.naturalHeight, Math.ceil(Math.max(...ys)) + 8);
+  if (x1 - x0 < 8 || y1 - y0 < 8) return null;
+
+  const full = document.createElement('canvas');
+  full.width = img.naturalWidth; full.height = img.naturalHeight;
+  const f = full.getContext('2d');
+  f.drawImage(img, 0, 0);
+  f.beginPath(); f.rect(0, 0, full.width, full.height);
+  f.moveTo(pts[0].x, pts[0].y);
+  for (let i=1;i<pts.length;i++) f.lineTo(pts[i].x, pts[i].y);
+  f.closePath();
+  f.fillStyle = '#fff'; f.fill('evenodd');
+
+  const cw = x1-x0, ch = y1-y0;
+  const crop = document.createElement('canvas');
+  crop.width = cw; crop.height = ch;
+  crop.getContext('2d').drawImage(full, x0, y0, cw, ch, 0, 0, cw, ch);
+
+  const max = 1600;
+  let out = crop;
+  if (Math.max(cw, ch) > max) {
+    const k = max / Math.max(cw, ch);
+    out = document.createElement('canvas');
+    out.width = Math.round(cw*k); out.height = Math.round(ch*k);
+    out.getContext('2d').drawImage(crop, 0, 0, out.width, out.height);
+  }
+  return { dataUrl: out.toDataURL('image/png'), bbox: {x:x0,y:y0,w:cw,h:ch}, area: (cw*ch)/(full.width*full.height) };
+}
+
+function complete(){
+  if (!img || loops.length === 0) { window.m1.lassoCancel(); return; }
+  const use = loops.slice(0, MAX_LOOPS);
+  const images = [];
+  let maxArea = 0;
+  for (const loop of use) {
+    const r = cropLoop(loop);
+    if (r) { images.push({ dataUrl: r.dataUrl, bbox: r.bbox }); maxArea = Math.max(maxArea, r.area); }
+  }
+  if (!images.length) { window.m1.lassoCancel(); return; }
+  window.m1.lassoDone({ images, areaRatio: maxArea, loops: images.length });
+}
+
+window.m1.onLassoInit(({ dataUrl }) => {
+  img = new Image();
+  img.onload = () => { sizeCanvas(); };
+  img.src = dataUrl;
+});
+window.addEventListener('resize', sizeCanvas);
+</script>
+</body></html>

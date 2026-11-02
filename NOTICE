@@ -1,0 +1,20 @@
+PPT-AI Classroom
+Copyright 2026 PPT-AI contributors
+Project code: Apache License 2.0 (see LICENSE).
+
+Third-party components retain their own licenses and copyrights:
+- Electron 45.1.0: MIT; Chromium and bundled libraries have additional notices.
+- KaTeX 0.19.1: MIT, including its distributed fonts and notices.
+- Koffi 3.3.5: MIT.
+- opencc-js 1.4.2: MIT; conversion data has additional licenses in LICENSES.
+- whisper.cpp b5454 (d1be6fde11ac6e0407606b4e42fe72d34add8037): MIT.
+- OpenAI Whisper small model: MIT, upstream model distribution via ggerganov/whisper.cpp.
+
+See third_party/licenses/ in the source repository and third-party-licenses/
+in the installed application for verbatim notices. Electron's distribution
+also includes LICENSE.electron.txt and LICENSES.chromium.html.
+Build-only dependencies are resolved by app/package-lock.json and are not
+covered by the project's Apache-2.0 license.
+
+DeepSeek is an external service; its terms and privacy policy are separate.
+SignPath Foundation has not approved or signed this project's current builds.

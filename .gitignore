@@ -1,0 +1,41 @@
+# Credentials and local settings
+.secrets/
+.env
+.env.*
+!.env.example
+settings.json
+
+# Dependencies, caches and generated artifacts
+node_modules/
+.cache/
+out/
+dist/
+coverage/
+*.log
+*.wav
+*.webm
+*.pcm
+*.dmp
+
+# ASR binaries and models (prepared separately)
+vendor/
+app/asr/
+*.bin
+
+# Captures and local evidence
+capture-*.png
+screenshot*.png
+screenshots/
+recordings/
+
+# Local verification, backups and internal historical records
+work/
+/PROJECT_PLAN.md
+/docs/DEVIATIONS.md
+/docs/WORK_STATUS.md
+/docs/M0_RESULTS.md
+/docs/M1_STATUS.md
+/docs/M2_STATUS.md
+/docs/M3_STATUS.md
+/docs/fixtures/m2-test.pptx
+/docs/使用说明_自行测试.md
