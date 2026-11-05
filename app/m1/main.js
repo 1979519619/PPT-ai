@@ -1,15 +1,16 @@
 const { app, BrowserWindow, ipcMain, screen, globalShortcut, session, desktopCapturer,
-  safeStorage, shell, Menu, Tray, nativeImage, clipboard } = require('electron');
+  safeStorage, shell, Menu, Tray, nativeImage, clipboard, net: electronNet } = require('electron');
 const { spawn } = require('child_process');
+const { StringDecoder } = require('string_decoder');
 const fs = require('fs');
 const path = require('path');
-const net = require('net');
 const os = require('os');
 const { findBlankRect, isBlankRect, planTranslations } = require('./screen-layout');
 const { bindScreenSurface, coverScreen } = require('./screen-surface');
 const { createLocalOCR } = require('./local-ocr');
 const { extractNativeText } = require('./native-text');
 const { createTextMeasurer } = require('./text-measurer');
+const { createManagedAsr } = require('./managed-asr');
 
 if (!app.isPackaged && process.env.PPT_AI_PREVIEW_DATA && path.isAbsolute(process.env.PPT_AI_PREVIEW_DATA)) {
   fs.mkdirSync(process.env.PPT_AI_PREVIEW_DATA, { recursive: true });
@@ -17,7 +18,7 @@ if (!app.isPackaged && process.env.PPT_AI_PREVIEW_DATA && path.isAbsolute(proces
 }
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
-const ASR_THREADS = Math.min(12, Math.max(4, Math.floor(os.cpus().length * 0.75)));
+const ASR_THREADS = Math.min(12, Math.max(1, Math.floor(os.cpus().length * 0.75)));
 const ASR_DIR = app.isPackaged ? path.join(process.resourcesPath, 'asr') : path.resolve(__dirname, '..', 'asr');
 const ASR_EXE = path.join(ASR_DIR, 'Release', 'whisper-server.exe');
 const ASR_MODEL = path.join(ASR_DIR, 'ggml-small.bin');
@@ -35,21 +36,38 @@ const CN_NUM = '一二三四五六七八九';
 const preferences = () => ({ preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true });
 const screenPreferences = () => ({ ...preferences(), zoomFactor: 1, partition: 'ppt-ai-screen-surfaces' });
 const TEXT_COLORS = new Set(['#000000', '#FFFFFF', '#2563EB']);
-let pet, panel, overlay, settingsWin, tray, detector, asrProc;
+let pet, panel, overlay, settingsWin, tray, detector, managedAsr;
 let petHidden = false, petDrag = null, quitting = false, openingLasso = false, captureDepth = 0;
 let lassoWin = null, lassoContext = null, selection = null, currentJob = null, currentResult = null;
 let epoch = 0, selectionSerial = 0, showing = false, lastState = null, lastExternal = null;
 let overlayRects = [], overlayRevision = 0, shapeAvailable = true, detectorWatch = null, detectorLastAt = 0;
 let localOCR = null, textMeasurer = null;
+let detectorStartedAt = 0, detectorFullStateAt = 0, detectorRestarts = 0, detectorRestartTimer = null, detectorPaused = false;
 let SetForegroundWindow = null;
 try { SetForegroundWindow = require('koffi').load('user32.dll').func('bool SetForegroundWindow(intptr_t hwnd)'); } catch (_) {}
 
 function log(msg) { try { fs.appendFileSync(LOG, new Date().toISOString() + ' ' + msg + '\n'); } catch (_) {} }
-function loadSettings() { try { return JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')); } catch (_) { return {}; } }
+function loadSettings() {
+  const settings = path.join(app.getPath('userData'), 'settings.json');
+  for (const file of [settings, settings + '.backup']) try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8')); if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  } catch (_) {}
+  return {};
+}
 function saveSettings(value) {
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
-  fs.writeFileSync(path.join(app.getPath('userData'), 'settings.json'), JSON.stringify(value, null, 2));
+  const target = path.join(app.getPath('userData'), 'settings.json');
+  const temporary = target + '.' + process.pid + '.tmp';
+  // Keep a last readable configuration and flush the new file before replacing.
+  let fd;
+  try {
+    fd = fs.openSync(temporary, 'w', 0o600); fs.writeFileSync(fd, JSON.stringify(value, null, 2), 'utf8'); fs.fsyncSync(fd); fs.closeSync(fd); fd = null;
+    try { const current = JSON.parse(fs.readFileSync(target, 'utf8')); if (current && typeof current === 'object') fs.copyFileSync(target, target + '.backup'); } catch (_) {}
+    fs.renameSync(temporary, target);
+  } finally { if (fd != null) try { fs.closeSync(fd); } catch (_) {} try { fs.unlinkSync(temporary); } catch (_) {} }
 }
+function appInfo() { return { version: app.getVersion(), packaged: app.isPackaged,
+  label: 'PPT-AI ' + app.getVersion() + (app.isPackaged ? ' 课堂助手（未签名预览版）' : ' 内部待测版') }; }
 function getApiKey() {
   try { const s = loadSettings(); return s.apiKeyEnc && safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(s.apiKeyEnc, 'base64')).trim() : ''; }
   catch (_) { log('KEY_DECRYPT_ERR'); return ''; }
@@ -85,6 +103,7 @@ function showPanel() {
   if (!panel || panel.isDestroyed()) return;
   panel.setBounds(clampBounds(panel.getBounds())); panel.show(); panel.focus();
   sendReady(panel, 'm1:state', { showing, tracking: lastState?.tracking || 'unavailable' });
+  sendReady(panel, 'm1:appInfo', appInfo());
 }
 function focusShow() { try { return !!(SetForegroundWindow && lastState?.showHwnd && SetForegroundWindow(lastState.showHwnd)); } catch (_) { return false; } }
 function sourceContext() {
@@ -128,7 +147,7 @@ function makeWindows() {
   pet.once('ready-to-show', showPet);
   petStatus();
   panel = new BrowserWindow({ ...clampBounds({ x: work.x + work.width - 650, y: work.y + 50, width: 640, height: 650 }),
-    frame: true, title: 'PPT-AI 内部待测版', alwaysOnTop: true, skipTaskbar: false, show: false,
+    frame: true, title: appInfo().label, alwaysOnTop: true, skipTaskbar: false, show: false,
     minWidth: 320, minHeight: 280, resizable: true, webPreferences: preferences() });
   panel.setMenu(null); panel.loadFile(path.join(__dirname, 'panel.html')); panel.setAlwaysOnTop(true, 'screen-saver');
   panel.on('close', event => { if (!quitting) { event.preventDefault(); send(panel, 'm1:clear', { reason: '已关闭面板' }); stopJob(); panel.hide(); } });
@@ -179,7 +198,7 @@ function menuTemplate() {
   ];
 }
 function makeTray() {
-  tray = new Tray(trayImage()); tray.setToolTip('PPT-AI 内部待测版 · 点击恢复浮球');
+  tray = new Tray(trayImage()); tray.setToolTip('PPT-AI 课堂助手 · 点击恢复浮球');
   tray.on('click', () => { petHidden = false; showPet(); });
   tray.on('right-click', () => tray.popUpContextMenu(Menu.buildFromTemplate(menuTemplate())));
 }
@@ -386,62 +405,84 @@ function onState(state) {
   send(panel, 'm1:state', { showing, own, tracking: state.tracking || 'unavailable' }); showPet();
 }
 function startDetector() {
-  detectorLastAt = Date.now();
-  detector = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', DETECTOR, '-OwnerPid', String(process.pid)], { windowsHide: true });
-  let buffer = '';
-  detector.stdout.on('data', data => {
-    buffer += data.toString(); let cut;
+  if (quitting) return;
+  clearInterval(detectorWatch);
+  detectorStartedAt = detectorLastAt = Date.now(); detectorFullStateAt = 0;
+  const proc = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', DETECTOR, '-OwnerPid', String(process.pid)], { windowsHide: true });
+  detector = proc;
+  let buffer = '', previousNavigation = lastState?.navigationSerial || 0;
+  const decoder = new StringDecoder('utf8');
+  const input = state => {
+    if (state.evt === 'lassoDown' && !lassoWin) openLasso('ask');
+    if (state.evt === 'voiceDown' && !lassoWin) { showPanel(); sendReady(panel, 'm1:rec', true); }
+    if (state.evt === 'voiceUp') sendReady(panel, 'm1:rec', false);
+  };
+  proc.stdout.on('data', data => {
+    if (detector !== proc || quitting) return;
+    buffer += decoder.write(data); let cut;
+    if (buffer.length > 256 * 1024) { buffer = ''; log('DETECTOR_OUTPUT_LIMIT'); return; }
     while ((cut = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, cut).trim(); buffer = buffer.slice(cut + 1);
-      if (line) try { const state = JSON.parse(line); detectorLastAt = Date.now(); onState(state); } catch (_) { log('DETECTOR_MESSAGE_ERR'); }
+      if (line) try {
+        const state = JSON.parse(line); detectorLastAt = Date.now();
+        if (state.type === 'input') { input(state); continue; }
+        if (state.type === 'heartbeat') {
+          if (showing && detectorFullStateAt && Date.now() - detectorFullStateAt > 1500 &&
+              Number.isInteger(state.navigationSerial) && state.navigationSerial !== previousNavigation) {
+            clearAll('放映页码暂未更新，检测到导航操作，旧内容已清除');
+          }
+          if (Number.isInteger(state.navigationSerial)) previousNavigation = state.navigationSerial;
+          continue;
+        }
+        detectorFullStateAt = Date.now();
+        if (detectorPaused) { detectorPaused = false; petStatus(); log('DETECTOR_RECOVERED'); }
+        onState(state);
+      } catch (_) { log('DETECTOR_MESSAGE_ERR'); }
     }
   });
-  detector.on('error', () => { log('DETECTOR_START_ERR'); sendReady(panel, 'm1:notice', { error: '放映检测器无法启动，暂用面板显示' }); });
-  detector.on('exit', () => detectorUnavailable());
-  detector.stderr.on('data', () => log('DETECTOR_STDERR'));
-  detectorWatch = setInterval(() => { if (Date.now() - detectorLastAt > 4000) detectorUnavailable(); }, 500);
+  proc.on('error', () => { log('DETECTOR_START_ERR'); detectorUnavailable(); });
+  proc.on('close', (code, signal) => {
+    if (detector !== proc) return;
+    detector = null; clearInterval(detectorWatch); detectorUnavailable();
+    log('DETECTOR_EXIT code=' + String(code) + ' signal=' + String(signal || 'none'));
+    if (!quitting && detectorRestarts < 3) {
+      detectorRestarts++;
+      detectorRestartTimer = setTimeout(() => { detectorRestartTimer = null; startDetector(); }, 1500 * detectorRestarts);
+    }
+  });
+  proc.stderr.on('data', () => log('DETECTOR_STDERR'));
+  detectorWatch = setInterval(() => {
+    if (detector !== proc || quitting || Date.now() - detectorStartedAt < 15000) return;
+    const fullAge = detectorFullStateAt ? Date.now() - detectorFullStateAt : Date.now() - detectorStartedAt;
+    if (fullAge > 5000) detectorUnavailable();
+    if (Date.now() - detectorLastAt > 4000 || fullAge > 30000) { detectorUnavailable(); try { proc.kill(); } catch (_) {} }
+  }, 500);
 }
 function detectorUnavailable() {
-  if (quitting || lastState?.tracking === 'stopped') return;
+  if (quitting) return;
+  sendReady(panel, 'm1:rec', false); sendReady(panel, 'm1:stopAudio', {});
+  if (detectorPaused) return;
+  detectorPaused = true;
   clearAll('画面检测暂不可用，旧内容已清除，请在面板提问');
   showing = false; lastState = { ...(lastState || {}), show: false, pageKey: '', tracking: 'stopped' };
   sendReady(panel, 'm1:state', { showing: false, tracking: 'stopped' });
   petStatus('检测暂停，可用面板');
 }
 function startAsr() {
-  if (!fs.existsSync(ASR_EXE) || !fs.existsSync(ASR_MODEL)) { log('ASR_MISSING'); return; }
-  asrProc = spawn(ASR_EXE, ['-m', ASR_MODEL, '-l', 'zh', '-t', String(ASR_THREADS), '--host', '127.0.0.1', '--port', '18080', '-nt', '--prompt', ASR_PROMPT],
-    { cwd: path.dirname(ASR_EXE), windowsHide: true });
-  asrProc.on('error', () => log('ASR_START_ERR'));
-  asrProc.stdout.on('data', data => log('ASR_OUT bytes=' + data.length));
-  asrProc.stderr.on('data', data => log('ASR_ERR bytes=' + data.length));
-}
-function waitAsr(ms = 10000) {
-  return new Promise(resolve => {
-    const started = Date.now();
-    const once = () => {
-      const socket = net.connect(18080, '127.0.0.1'); socket.setTimeout(1000);
-      socket.once('connect', () => { socket.destroy(); resolve(true); });
-      socket.once('timeout', () => socket.destroy(new Error('timeout')));
-      socket.once('error', () => { socket.destroy(); if (Date.now() - started > ms) resolve(false); else setTimeout(once, 300); });
-    };
-    once();
-  });
+  managedAsr ||= createManagedAsr({ executable: ASR_EXE, model: ASR_MODEL, threads: ASR_THREADS, log,
+    notify: error => { sendReady(panel, 'm1:notice', { error }); sendReady(settingsWin, 'm1:notice', { error }); } });
+  managedAsr.start();
 }
 async function handleAsr(b64) {
   if (typeof b64 !== 'string' || b64.length > 12 * 1024 * 1024 || !/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) return { ok: false, error: '录音格式无效或过大，请缩短录音' };
   try {
-    if (!await waitAsr()) return { ok: false, error: '本机识别服务未就绪，请稍后重试' };
-    const fd = new FormData(); fd.append('file', new Blob([Buffer.from(b64, 'base64')], { type: 'audio/wav' }), 'q.wav');
-    fd.append('response_format', 'json'); fd.append('temperature', '0');
-    const response = await fetch('http://127.0.0.1:18080/inference', { method: 'POST', body: fd, signal: AbortSignal.timeout(45000) });
-    if (!response.ok) return { ok: false, error: '本机识别失败 HTTP ' + response.status };
-    const data = await response.json(), original = String(data.text || '').trim();
+    if (!managedAsr) startAsr();
+    const data = await managedAsr.recognize(Buffer.from(b64, 'base64'), ASR_PROMPT), original = String(data.text || '').trim();
     let text = [...t2s(original)].filter(ch => ALLOW_CH.test(ch)).join('').replace(/\s+/g, ' ').trim();
     text = text.replace(/([1-9])(?=次|元|角|边|项|维|倍|分之)/g, (_m, n) => CN_NUM[Number(n) - 1]);
     if (HALLU.test(original) || HALLU.test(text) || (text.match(/[\u4e00-\u9fff]/g) || []).length < 2) return { ok: false, error: '没听清，请重说' };
     return { ok: true, text };
-  } catch (_) { return { ok: false, error: '本机识别异常或超时，请重说' }; }
+  } catch (error) { return { ok: false, error: error?.message || '本机识别异常或超时，请重说' }; }
 }
 function displayOverlay(cards, task) {
   if (!shapeAvailable || !cards.length || !overlay || overlay.isDestroyed()) return false;
@@ -595,16 +636,18 @@ async function handleAsk(payload = {}) {
     if (source.inputMode === 'image') parts.push({ type: 'image_url', image_url: { url: selected.images[source.id].dataUrl, detail: 'high' } });
   });
   else imgs.forEach(url => parts.push({ type: 'image_url', image_url: { url, detail: 'high' } }));
+  const sourceCharacters = confirmedSources.reduce((sum, source) => sum + Array.from(source.text || '').length, 0);
+  const translationBudget = Math.min(98304, Math.max(8192, sourceCharacters * 2 + 2048));
   const body = JSON.stringify({ model: 'deepseek-flash',
     messages: [{ role: 'system', content: task === 'translate' ? TRANSLATE_PROMPT : SYSTEM_PROMPT },
       { role: 'user', content: parts.length === 1 ? parts[0].text : parts }],
-    stream: true, stream_options: { include_usage: true }, max_tokens: task === 'translate' ? 4096 : 1536,
+    stream: true, stream_options: { include_usage: true }, max_tokens: task === 'translate' ? translationBudget : 1536,
     temperature: task === 'translate' ? 0.1 : 0.4, thinking: { type: 'disabled' },
     ...(task === 'translate' ? { response_format: { type: 'json_object' } } : {}) });
   if (Buffer.byteLength(body) > 46 * 1024 * 1024) { stopJob(); return fail('请求总量过大，请缩小选区'); }
-  const timeout = setTimeout(() => job.ctrl.abort(), 90000);
+  const timeout = setTimeout(() => job.ctrl.abort(), task === 'translate' ? Math.min(300000, Math.max(90000, sourceCharacters * 8)) : 90000);
   try {
-    const response = await fetch('https://api.deepseek.com/chat/completions', {
+    const response = await electronNet.fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' }, body, signal: job.ctrl.signal });
     if (!valid()) return { ok: false, aborted: true };
     if (!response.ok) throw new Error('请求失败 HTTP ' + response.status + '，请检查网络、Key、模型权限和余额');
@@ -639,7 +682,7 @@ async function handleAsk(payload = {}) {
       const indexed = new Map();
       for (const item of parsed.translations) {
         if (!item || typeof item !== 'object' || !Number.isInteger(item.index) || item.index < 0 || item.index >= imgs.length || indexed.has(item.index) ||
-            (typeof item.text !== 'string' && !item.error) || (typeof item.text === 'string' && item.text.length > 12000)) throw new Error('译文对应关系无效，请重新翻译');
+            (typeof item.text !== 'string' && !item.error) || (typeof item.text === 'string' && item.text.length > 120000)) throw new Error('译文对应关系无效或过长，请拆分选区重新翻译');
         indexed.set(item.index, { index: item.index, text: typeof item.text === 'string' ? item.text : '', ...(item.error ? { error: String(item.error).slice(0, 300) } : {}) });
       }
       result.translations = [...indexed.values()].sort((a, b) => a.index - b.index);
@@ -799,9 +842,16 @@ function installIpc() {
     hasKey: !!getApiKey(), encrypted: !!loadSettings().apiKeyEnc, model: 'deepseek-flash',
     asrModel: path.basename(ASR_MODEL), asrMB: fs.existsSync(ASR_MODEL) ? Math.round(fs.statSync(ASR_MODEL).size / 1048576) : 0,
     asrThreads: ASR_THREADS, logsPath: OUT, settingsPath: path.join(app.getPath('userData'), 'settings.json'),
+    microphoneId: typeof loadSettings().microphoneId === 'string' ? loadSettings().microphoneId : '', ...appInfo(),
     hotkeys: { voice: 'Ctrl+Alt+Space', lasso: 'Ctrl+Alt+X', ball: 'Ctrl+Alt+B', panel: 'Ctrl+Alt+H',
-      settings: 'Ctrl+Alt+S', clear: 'Ctrl+Alt+C', quit: 'Ctrl+Alt+Q' }
+      settings: 'Ctrl+Alt+S', clear: 'Ctrl+Alt+C', focus: 'Ctrl+Alt+F', quit: 'Ctrl+Alt+Q' }
   }));
+  handle('m1:saveMicrophone', id => {
+    if (typeof id !== 'string' || id.length > 1024 || /[\r\n\0]/.test(id)) return { ok: false, error: '麦克风标识无效' };
+    try { const value = loadSettings(); value.microphoneId = id; saveSettings(value);
+      sendReady(panel, 'm1:microphone', { id }); return { ok: true }; }
+    catch (_) { return { ok: false, error: '麦克风选择未能保存，请重试' }; }
+  });
   handle('m1:saveKey', key => {
     const k = typeof key === 'string' ? key.trim() : '';
     if (k.length < 10 || k.length > 512 || /[\r\n]/.test(k)) return { ok: false, error: 'Key 长度或格式无效' };
@@ -813,7 +863,7 @@ function installIpc() {
     const k = (typeof key === 'string' ? key.trim() : '') || getApiKey();
     if (!k) return { ok: false, error: '未配置 Key' };
     try {
-      const response = await fetch('https://api.deepseek.com/models', {
+      const response = await electronNet.fetch('https://api.deepseek.com/models', {
         headers: { Authorization: 'Bearer ' + k }, signal: AbortSignal.timeout(15000) });
       if (!response.ok) return { ok: false, error: 'HTTP ' + response.status };
       const body = await response.json(), models = (body.data || []).map(v => v.id), hasFlash = models.includes('deepseek-flash');
@@ -824,8 +874,14 @@ function installIpc() {
 }
 app.on('second-instance', () => { if (pet) { petHidden = false; showPet(); showPanel(); } });
 if (gotLock) app.whenReady().then(() => {
-  session.defaultSession.setPermissionRequestHandler((contents, permission, callback) =>
-    callback(permission === 'media' && !!BrowserWindow.fromWebContents(contents)));
+  const microphoneAllowed = contents => !!contents && [panel, settingsWin].some(win => win && !win.isDestroyed() && win.webContents === contents);
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) =>
+    callback(permission === 'media' && microphoneAllowed(contents) && !(details?.mediaTypes || []).includes('video')));
+  session.defaultSession.setPermissionCheckHandler((contents, permission, _origin, details) => permission === 'media' &&
+    microphoneAllowed(contents) && details?.mediaType !== 'video');
+  const surfaces = session.fromPartition('ppt-ai-screen-surfaces');
+  surfaces.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  surfaces.setPermissionCheckHandler(() => false);
   makeWindows(); installIpc(); makeTray(); startDetector(); startAsr();
   const shortcuts = {
     'CommandOrControl+Alt+H': () => panel.isVisible() ? (send(panel, 'm1:stopAudio', {}), panel.hide()) : showFullResult(),
@@ -841,9 +897,9 @@ if (gotLock) app.whenReady().then(() => {
   log('INTERNAL_PREVIEW_READY version=' + app.getVersion());
 });
 app.on('window-all-closed', () => {});
-app.on('before-quit', () => { quitting = true; stopJob(); stopSelectionPreparation(); localOCR?.dispose(); textMeasurer?.dispose(); send(panel, 'm1:stopAudio', {}); });
+app.on('before-quit', () => { quitting = true; clearTimeout(detectorRestartTimer); stopJob(); stopSelectionPreparation(); localOCR?.dispose(); textMeasurer?.dispose(); managedAsr?.dispose(); send(panel, 'm1:stopAudio', {}); });
 app.on('will-quit', () => {
   globalShortcut.unregisterAll(); clearInterval(detectorWatch);
-  if (detector) detector.kill(); if (asrProc) asrProc.kill(); if (tray) tray.destroy(); log('QUIT');
+  if (detector) detector.kill(); if (tray) tray.destroy(); log('QUIT');
 });
 

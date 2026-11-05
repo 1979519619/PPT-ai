@@ -5,15 +5,12 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { reconstructLines } = require('./ocr-lines');
 
 const MAX_INPUT_BYTES = 48 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
 const TIMEOUT_MS = 60000;
 const finite = value => typeof value === 'number' && Number.isFinite(value);
-const median = values => {
-  const sorted = values.filter(value => finite(value) && value > 0).sort((a, b) => a - b);
-  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
-};
 const abortError = () => Object.assign(new Error('本次文字识别已取消'), { name: 'AbortError' });
 
 function createLocalOCR({ app, resourcesPath = process.resourcesPath, log = () => {} } = {}) {
@@ -120,7 +117,7 @@ function createLocalOCR({ app, resourcesPath = process.resourcesPath, log = () =
         glyphHeight: null, provider: 'rapidocr', snapshotId };
       if (error || !result || result.error) return { ...base, error: error || result?.error || '未取得该选区文字' };
       if (!Array.isArray(result.lines) || result.lines.length > 600) return { ...base, error: '本区文字行过多或识别不完整，请缩小选区' };
-      const lines = result.lines.flatMap(line => {
+      const fragments = result.lines.flatMap(line => {
         if (!line || !Array.isArray(line.box) || line.box.length !== 4 || !line.box.every(point =>
           Array.isArray(point) && point.length === 2 && point.every(finite))) return [];
         const xs = line.box.map(point => Math.max(0, Math.min(cropRect.width, point[0])));
@@ -136,6 +133,7 @@ function createLocalOCR({ app, resourcesPath = process.resourcesPath, log = () =
           height: (bottom - top) * bounds.height / size.height
         } }];
       });
+      const { lines, glyphHeight } = reconstructLines(fragments);
       if (!lines.length) return { ...base, error: '没有识别到清晰文字，请重新圈选或校正原文' };
       const left = Math.min(...lines.map(line => line.rect.x));
       const top = Math.min(...lines.map(line => line.rect.y));
@@ -144,8 +142,8 @@ function createLocalOCR({ app, resourcesPath = process.resourcesPath, log = () =
       const confidence = lines.reduce((sum, line) => sum + line.confidence, 0) / lines.length;
       return { ...base, text: lines.map(line => line.text).join('\n'), lines,
         rect: { x: left, y: top, width: right - left, height: bottom - top },
-        selectionRect: { ...region.rect }, glyphHeight: median(lines.map(line => line.rect.height)),
-        confidence, lowConfidence: confidence < 0.8 || lines.some(line => line.confidence < 0.6) };
+        selectionRect: { ...region.rect }, glyphHeight,
+        confidence, lowConfidence: confidence < 0.8 || lines.some(line => line.minConfidence < 0.6) };
     });
     // Only counts and provider states are logged; source/translated text is omitted.
     log('OCR_DONE regions=' + mapped.length + ' recognized=' + mapped.filter(region => !region.error).length);

@@ -1,9 +1,11 @@
 ﻿param([int]$OwnerPid = 0)
 
 Add-Type -AssemblyName System.Windows.Forms
-Add-Type @"
+Add-Type -ReferencedAssemblies @('System.Windows.Forms','System.Drawing','System.Core') -TypeDefinition @"
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -20,12 +22,21 @@ public class W {
   private static readonly List<IntPtr> EventHooks = new List<IntPtr>();
   private static IntPtr MouseHook = IntPtr.Zero;
   private static IntPtr KeyboardHook = IntPtr.Zero;
-  private static IntPtr TrackedHwnd = IntPtr.Zero;
-  private static IntPtr CurrentShowHwnd = IntPtr.Zero;
+  private static long TrackedWindow;
+  private static long CurrentShowWindow;
   private static string TrackedRect = "";
   private static uint OwnerProcess;
   private static long Serial;
   private static long NavigationSerial;
+  private static Thread HookThread, OutputThread;
+  private static uint HookThreadId;
+  private static readonly ManualResetEvent HookStarted = new ManualResetEvent(false);
+  private static readonly AutoResetEvent InputReady = new AutoResetEvent(false);
+  private static readonly ConcurrentQueue<string> InputEvents = new ConcurrentQueue<string>();
+  private static readonly object OutputGate = new object();
+  private static volatile bool HookReady, StopOutput, VoicePressed, LassoPressed;
+  private static long LastPumpStamp;
+  private static IntPtr OwnerHandle = IntPtr.Zero;
 
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
@@ -50,6 +61,9 @@ public class W {
   [DllImport("kernel32.dll")] private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] private static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder name, ref uint size);
   [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr process);
+  [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+  [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+  [DllImport("user32.dll", EntryPoint="PostThreadMessageW", ExactSpelling=true)] private static extern bool PostThreadMessage(uint thread, uint message, IntPtr wparam, IntPtr lparam);
 
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L,T,R,B; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X,Y; }
@@ -116,28 +130,29 @@ public class W {
       RECT rect;
       if(!GetWindowRect(root,out rect))return;
       string geometry=rect.L+","+rect.T+","+rect.R+","+rect.B;
-      if(root==TrackedHwnd && TrackedRect!=geometry)Interlocked.Increment(ref Serial);
-      TrackedHwnd=root;TrackedRect=geometry;
+      if(root.ToInt64()==Interlocked.Read(ref TrackedWindow) && TrackedRect!=geometry)Interlocked.Increment(ref Serial);
+      Interlocked.Exchange(ref TrackedWindow,root.ToInt64());TrackedRect=geometry;
     }
   }
   private static bool IsTrackedSource(IntPtr h) {
     if(h==IntPtr.Zero)return false;
     IntPtr root=GetAncestor(h,2);if(root==IntPtr.Zero)root=h;
     uint process;GetWindowThreadProcessId(root,out process);
-    return root==TrackedHwnd && process!=OwnerProcess;
+    return root.ToInt64()==Interlocked.Read(ref TrackedWindow) && process!=OwnerProcess;
   }
-  public static void SetShowWindow(IntPtr h) { CurrentShowHwnd=h; }
+  public static void SetShowWindow(IntPtr h) { Interlocked.Exchange(ref CurrentShowWindow,h.ToInt64()); }
   private static bool IsShowSource(IntPtr h) {
-    if(CurrentShowHwnd==IntPtr.Zero || !IsTrackedSource(h))return false;
+    long show=Interlocked.Read(ref CurrentShowWindow);
+    if(show==0 || !IsTrackedSource(h))return false;
     IntPtr root=GetAncestor(h,2);if(root==IntPtr.Zero)root=h;
-    return root==CurrentShowHwnd;
+    return root.ToInt64()==show;
   }
   private static void OnWinEvent(IntPtr hook,uint ev,IntPtr hwnd,int obj,int child,uint thread,uint time) {
     try {
       if(obj==-9 || obj==-8 || !IsTrackedSource(hwnd))return;
       bool scrollEvent=ev==0x12 || ev==0x13;
       bool scrollbar=obj==-5 || obj==-6 || TextOf(hwnd,true).IndexOf("scroll",StringComparison.OrdinalIgnoreCase)>=0;
-      bool sourceClient=hwnd==TrackedHwnd && obj==-4 && child==0;
+      bool sourceClient=hwnd.ToInt64()==Interlocked.Read(ref TrackedWindow) && obj==-4 && child==0;
       // Ignore unrelated child controls, caret blinking and duplicate root move
       // notifications. Actual root geometry is compared in TrackForeground.
       if(scrollEvent || scrollbar || sourceClient)Interlocked.Increment(ref Serial);
@@ -162,18 +177,52 @@ public class W {
   private static IntPtr OnKeyboard(int code,IntPtr message,IntPtr data) {
     try {
       long kind=message.ToInt64();
-      if(code>=0 && (kind==0x0100 || kind==0x0104) && IsShowSource(GetForegroundWindow())
-        && (GetAsyncKeyState(0x11)&0x8000)==0 && (GetAsyncKeyState(0x12)&0x8000)==0) {
+      bool down=kind==0x0100 || kind==0x0104;
+      bool up=kind==0x0101 || kind==0x0105;
+      if(code>=0 && (down || up)) {
         KEYBOARDINFO key=(KEYBOARDINFO)Marshal.PtrToStructure(data,typeof(KEYBOARDINFO));
-        bool navigation=(key.Key>=0x21 && key.Key<=0x28) || key.Key==0x20
-          || key.Key==0x0D || key.Key==0x08 || key.Key==0x1B || key.Key==0x4E || key.Key==0x50;
-        if(navigation)Interlocked.Increment(ref NavigationSerial);
+        UpdateShortcutFromKey(key.Key,down);
+        if(down && IsShowSource(GetForegroundWindow())
+        && (GetAsyncKeyState(0x11)&0x8000)==0 && (GetAsyncKeyState(0x12)&0x8000)==0) {
+          bool navigation=(key.Key>=0x21 && key.Key<=0x28) || key.Key==0x20
+            || key.Key==0x0D || key.Key==0x08 || key.Key==0x1B || key.Key==0x4E || key.Key==0x50;
+          if(navigation)Interlocked.Increment(ref NavigationSerial);
+        }
       }
     } catch {}
     return CallNextHookEx(KeyboardHook,code,message,data);
   }
-  public static string StartHooks(uint owner) {
-    OwnerProcess=owner;
+  private static bool Down(int key) { return (GetAsyncKeyState(key)&0x8000)!=0; }
+  private static void QueueInput(string value) {
+    string discarded;
+    while(InputEvents.Count>=64)InputEvents.TryDequeue(out discarded);
+    InputEvents.Enqueue(value);InputReady.Set();
+  }
+  private static void SetShortcutStates(bool voice,bool lasso) {
+    bool previousVoice=VoicePressed, previousLasso=LassoPressed;
+    VoicePressed=voice;LassoPressed=lasso;
+    if(voice && !previousVoice)QueueInput("voiceDown");
+    if(!voice && previousVoice)QueueInput("voiceUp");
+    if(lasso && !previousLasso && !voice)QueueInput("lassoDown");
+  }
+  private static void PollShortcuts() {
+    bool control=Down(0x11),alt=Down(0x12);
+    SetShortcutStates(control && alt && Down(0x20),control && alt && Down(0x58));
+  }
+  private static void UpdateShortcutFromKey(uint key,bool down) {
+    if(key!=0x11 && key!=0x12 && key!=0x20 && key!=0x58 && key!=0xA2 && key!=0xA3 && key!=0xA4 && key!=0xA5)return;
+    bool control=Down(0x11),alt=Down(0x12),space=Down(0x20),x=Down(0x58);
+    if(key==0x11)control=down;
+    if(key==0xA2)control=down || Down(0xA3);
+    if(key==0xA3)control=down || Down(0xA2);
+    if(key==0x12)alt=down;
+    if(key==0xA4)alt=down || Down(0xA5);
+    if(key==0xA5)alt=down || Down(0xA4);
+    if(key==0x20)space=down;
+    if(key==0x58)x=down;
+    SetShortcutStates(control && alt && space,control && alt && x);
+  }
+  private static void InstallCoreHooks() {
     uint[,] ranges={{0x12,0x13},{0x800E,0x800E},{0x800B,0x800B}};
     for(int i=0;i<ranges.GetLength(0);i++) {
       IntPtr hook=SetWinEventHook(ranges[i,0],ranges[i,1],IntPtr.Zero,EventCallback,0,0,2);
@@ -181,20 +230,95 @@ public class W {
     }
     MouseHook=SetWindowsHookEx(14,MouseCallback,GetModuleHandle(null),0);
     KeyboardHook=SetKeyboardHookEx(13,KeyboardCallback,GetModuleHandle(null),0);
+  }
+  private static void RemoveCoreHooks() {
+    HookReady=false;
+    foreach(IntPtr hook in EventHooks)UnhookWinEvent(hook);EventHooks.Clear();
+    if(MouseHook!=IntPtr.Zero)UnhookWindowsHookEx(MouseHook);MouseHook=IntPtr.Zero;
+    if(KeyboardHook!=IntPtr.Zero)UnhookWindowsHookEx(KeyboardHook);KeyboardHook=IntPtr.Zero;
+  }
+  private static void HookLoop() {
+    System.Windows.Forms.Timer timer=null;
+    try {
+      HookThreadId=GetCurrentThreadId();
+      Interlocked.Exchange(ref LastPumpStamp,Stopwatch.GetTimestamp());
+      InstallCoreHooks();
+      timer=new System.Windows.Forms.Timer();timer.Interval=20;
+      timer.Tick+=(sender,args)=>{
+        Interlocked.Exchange(ref LastPumpStamp,Stopwatch.GetTimestamp());
+        TrackForeground(GetForegroundWindow());PollShortcuts();
+      };
+      HookReady=true;timer.Start();HookStarted.Set();
+      // The hook message pump never performs Office COM calls, output writes,
+      // sleeps, screenshot work or recognition. Slow COM cannot starve it.
+      System.Windows.Forms.Application.Run();
+    } catch { HookReady=false; }
+    finally {
+      if(timer!=null){timer.Stop();timer.Dispose();}
+      SetShortcutStates(false,false);RemoveCoreHooks();HookStarted.Set();
+    }
+  }
+  public static void WriteState(string json) {
+    lock(OutputGate){Console.Out.WriteLine(json);Console.Out.Flush();}
+  }
+  private static void OutputLoop() {
+    long lastHeartbeat=0;
+    while(!StopOutput) {
+      InputReady.WaitOne(250);
+      string input;
+      while(InputEvents.TryDequeue(out input))WriteState("{\"type\":\"input\",\"evt\":\""+input+"\"}");
+      long now=Stopwatch.GetTimestamp();
+      if((now-lastHeartbeat)*1000.0/Stopwatch.Frequency<500)continue;
+      lastHeartbeat=now;
+      // A helper must not remain orphaned after its owning Electron process is
+      // forcibly terminated. This handle identifies that process, not a reused PID.
+      if(OwnerHandle!=IntPtr.Zero && WaitForSingleObject(OwnerHandle,0)==0){Environment.Exit(0);return;}
+      WriteState("{\"type\":\"heartbeat\",\"navigationTracking\":\""+NavigationTracking()+
+        "\",\"activityTracking\":\""+ActivityTracking()+"\",\"hookAgeMs\":"+HookAgeMs()+
+        ",\"hookHealth\":\""+HookHealth()+"\""+
+        ",\"activitySerial\":"+ActivitySerial()+",\"navigationSerial\":"+ShowNavigationSerial()+
+        ",\"showHwnd\":"+Interlocked.Read(ref CurrentShowWindow)+"}");
+    }
+  }
+  public static string StartHooks(uint owner) {
+    OwnerProcess=owner;StopOutput=false;HookStarted.Reset();
+    if(owner!=0)OwnerHandle=OpenProcess(0x100000,false,owner);
+    HookThread=new Thread(new ThreadStart(HookLoop));HookThread.IsBackground=true;
+    HookThread.SetApartmentState(ApartmentState.STA);HookThread.Start();HookStarted.WaitOne(2000);
+    OutputThread=new Thread(new ThreadStart(OutputLoop));OutputThread.IsBackground=true;OutputThread.Start();
+    return ActivityTracking();
+  }
+  public static long HookAgeMs() {
+    long last=Interlocked.Read(ref LastPumpStamp);
+    return last==0 ? Int64.MaxValue : (long)Math.Max(0,(Stopwatch.GetTimestamp()-last)*1000.0/Stopwatch.Frequency);
+  }
+  private static bool PumpResponsive() { return HookReady && HookThread!=null && HookThread.IsAlive && HookAgeMs()<1500; }
+  // Windows does not expose a supported validity query for silently removed
+  // low-level hooks. Report responsive registration separately from observed
+  // navigation counters rather than calling a saved HHOOK proof of delivery.
+  public static string HookHealth() { return PumpResponsive() ? "responsive-registration" : "pump-unavailable"; }
+  public static bool VoiceHeld() { return VoicePressed; }
+  public static bool LassoHeld() { return LassoPressed; }
+  public static long ActivitySerial() { return Interlocked.Read(ref Serial); }
+  public static long ShowNavigationSerial() { return Interlocked.Read(ref NavigationSerial); }
+  public static string ActivityTracking() {
+    if(!PumpResponsive())return "unavailable";
     if(EventHooks.Count==3 && MouseHook!=IntPtr.Zero)return "native";
     return EventHooks.Count>0 || MouseHook!=IntPtr.Zero ? "partial" : "unavailable";
   }
-  public static long ActivitySerial() { return Interlocked.Read(ref Serial); }
-  public static long ShowNavigationSerial() { return Interlocked.Read(ref NavigationSerial); }
   public static string NavigationTracking() {
+    if(!PumpResponsive())return "unavailable";
     if(MouseHook!=IntPtr.Zero && KeyboardHook!=IntPtr.Zero)return "native";
     return MouseHook!=IntPtr.Zero || KeyboardHook!=IntPtr.Zero ? "partial" : "unavailable";
   }
   public static void StopHooks() {
-    foreach(IntPtr hook in EventHooks)UnhookWinEvent(hook);EventHooks.Clear();
-    if(MouseHook!=IntPtr.Zero)UnhookWindowsHookEx(MouseHook);MouseHook=IntPtr.Zero;
-    if(KeyboardHook!=IntPtr.Zero)UnhookWindowsHookEx(KeyboardHook);KeyboardHook=IntPtr.Zero;
-    CurrentShowHwnd=IntPtr.Zero;
+    HookReady=false;
+    if(HookThreadId!=0)PostThreadMessage(HookThreadId,0x0012,IntPtr.Zero,IntPtr.Zero);
+    if(HookThread!=null && HookThread.IsAlive)HookThread.Join(1000);
+    StopOutput=true;InputReady.Set();
+    if(OutputThread!=null && OutputThread.IsAlive)OutputThread.Join(1000);
+    if(OwnerHandle!=IntPtr.Zero){CloseHandle(OwnerHandle);OwnerHandle=IntPtr.Zero;}
+    Interlocked.Exchange(ref CurrentShowWindow,0);
   }
 }
 "@
@@ -307,15 +431,10 @@ function Get-TrackedShows($Candidates) {
 
 [W]::EnablePhysicalCoordinates()
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-$VK_CONTROL=0x11;$VK_MENU=0x12;$VK_SPACE=0x20;$VK_X=0x58
-$prevVoice=$false;$prevLasso=$false
-$out=[Console]::Out
-$activityTracking=[W]::StartHooks([uint32][Math]::Max(0,$OwnerPid))
+$null=[W]::StartHooks([uint32][Math]::Max(0,$OwnerPid))
 try {
   while($true) {
-    [System.Windows.Forms.Application]::DoEvents()
     $h=[W]::GetForegroundWindow()
-    [W]::TrackForeground($h)
     $foreground=[W]::Info($h)
     $root=[W]::GetAncestor($h,2)
     if($root -eq [IntPtr]::Zero){$root=$h}
@@ -337,16 +456,7 @@ try {
       if($null -ne $showNative){$showHwnd=$showNative.Hwnd}
     }
     [W]::SetShowWindow([IntPtr]$showHwnd)
-    $ctrl=([W]::GetAsyncKeyState($VK_CONTROL) -band 0x8000) -ne 0
-    $alt=([W]::GetAsyncKeyState($VK_MENU) -band 0x8000) -ne 0
-    $space=([W]::GetAsyncKeyState($VK_SPACE) -band 0x8000) -ne 0
-    $x=([W]::GetAsyncKeyState($VK_X) -band 0x8000) -ne 0
-    $voice=$ctrl -and $alt -and $space;$lasso=$ctrl -and $alt -and $x
-    $evt=''
-    if($voice -and -not $prevVoice){$evt='voiceDown'}
-    elseif(-not $voice -and $prevVoice){$evt='voiceUp'}
-    elseif($lasso -and -not $prevLasso){$evt='lassoDown'}
-    $prevVoice=$voice;$prevLasso=$lasso
+    $voice=[W]::VoiceHeld();$lasso=[W]::LassoHeld()
     $showRect='';$showTitle=''
     if($null -ne $showNative){$showRect=$showNative.Rect;$showTitle=$showNative.Title}
     $o=[pscustomobject]@{
@@ -355,11 +465,13 @@ try {
       foregroundWindowRoot=$root.ToInt64();foregroundPid=$rootInfo.Pid
       show=($showHwnd -ne 0);showHwnd=$showHwnd;showRect=$showRect;showTitle=$showTitle
       pageKey=$pageKey;tracking=$tracking;slideIndex=$slideIndex;showPosition=$showPosition;pageSource=$pageSource
-      activitySerial=[W]::ActivitySerial();activityTracking=$activityTracking
+      activitySerial=[W]::ActivitySerial();activityTracking=[W]::ActivityTracking()
       navigationSerial=[W]::ShowNavigationSerial();navigationTracking=[W]::NavigationTracking()
-      voice=$voice;lasso=$lasso;evt=$evt
+      hookAgeMs=[W]::HookAgeMs()
+      hookHealth=[W]::HookHealth()
+      voice=$voice;lasso=$lasso;evt=''
     }
-    $out.WriteLine(($o | ConvertTo-Json -Compress));$out.Flush()
+    [W]::WriteState(($o | ConvertTo-Json -Compress))
     Start-Sleep -Milliseconds 200
   }
 } finally { [W]::StopHooks() }

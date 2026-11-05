@@ -1,6 +1,6 @@
 {
   "name": "ppt-ai",
-  "version": "0.4.0-internal.6",
+  "version": "0.4.0-preview.1",
   "private": true,
   "description": "PPT-AI 课堂助手",
   "author": "PPT-AI",
@@ -19,12 +19,15 @@
     "appId": "com.pptai.classroom",
     "productName": "PPT-AI Classroom",
     "directories": {
-      "output": "dist"
+      "output": "dist/0.4.0-preview.1"
     },
     "files": [
       "m1/**/*",
       "!m1/out/**/*",
       "!m1/package.json",
+      "!m1/*.ps1",
+      "!m1/*.py",
+      "!m1/ocr-requirements.txt",
       "package.json"
     ],
     "asar": true,
@@ -34,7 +37,8 @@
     "extraResources": [
       {
         "from": "asr",
-        "to": "asr"
+        "to": "asr",
+        "filter": ["ggml-small.bin", "Release/whisper-server.exe", "Release/*.dll"]
       },
       {
         "from": "m1/detector.ps1",
@@ -42,7 +46,18 @@
       },
       {
         "from": "ocr-runtime",
-        "to": "ocr-runtime"
+        "to": "ocr-runtime",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo",
+          "!site-packages/pip/**", "!site-packages/pip-*.dist-info/**",
+          "!site-packages/setuptools/**", "!site-packages/setuptools-*.dist-info/**",
+          "!site-packages/wheel/**", "!site-packages/wheel-*.dist-info/**",
+          "!site-packages/_distutils_hack/**", "!site-packages/distutils-precedence.pth",
+          "!site-packages/bin/**", "!site-packages/share/**",
+          "!site-packages/**/tests/**", "!site-packages/**/test/**",
+          "!site-packages/rapidocr/models/**"
+        ]
       },
       {
         "from": "m1/ocr-worker.py",
@@ -72,9 +87,11 @@
       "createStartMenuShortcut": true,
       "shortcutName": "PPT-AI 课堂助手",
       "artifactName": "PPT-AI-Setup-${version}.${ext}",
-      "deleteAppDataOnUninstall": true,
+      "deleteAppDataOnUninstall": false,
       "license": "../LICENSE",
       "runAfterFinish": false,
+      "installerLanguages": ["zh_CN"],
+      "displayLanguageSelector": false,
       "include": "build/installer.nsh"
     },
     "extraFiles": [
@@ -87,12 +104,20 @@
         "to": "NOTICE.txt"
       },
       {
-        "from": "../PRIVACY.md",
-        "to": "PRIVACY.md"
+        "from": "build/generated/PRIVACY.txt",
+        "to": "PRIVACY.txt"
       },
       {
         "from": "../third_party/licenses",
         "to": "third-party-licenses"
+      },
+      {
+        "from": "../third_party/OCR-NOTICE.md",
+        "to": "third-party-licenses/OCR-NOTICE.md"
+      },
+      {
+        "from": "../third_party/VC-REDIST-NOTICE.md",
+        "to": "third-party-licenses/VC-REDIST-NOTICE.md"
       }
     ],
     "electronVersion": "45.1.0",

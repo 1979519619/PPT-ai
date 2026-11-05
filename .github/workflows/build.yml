@@ -37,6 +37,9 @@ jobs:
         run: npm test
       - name: Collect dependency license notices
         run: node scripts/sync-licenses.cjs
+      - name: Prepare installer runtime and plain privacy page
+        shell: pwsh
+        run: ./scripts/prepare-build.ps1 -AllowCiWorkspace
       - name: Build unsigned NSIS installer
         working-directory: app
         run: npm run dist -- --publish never
@@ -45,8 +48,8 @@ jobs:
         run: ./scripts/checksums.ps1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: PPT-AI-0.4.0-internal.6-windows-x64-unsigned
+          name: PPT-AI-0.4.0-preview.1-windows-x64-unsigned
           path: |
-            app/dist/PPT-AI-Setup-*.exe
-            app/dist/SHA256SUMS
+            app/dist/0.4.0-preview.1/PPT-AI-Setup-0.4.0-preview.1.exe
+            app/dist/0.4.0-preview.1/SHA256SUMS
           if-no-files-found: error

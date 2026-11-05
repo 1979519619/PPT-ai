@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="../node_modules/katex/dist/katex.min.css">
 <script src="../node_modules/katex/dist/katex.min.js"></script>
 <script src="text-render.js"></script>
-<title>PPT-AI 0.4.0-internal.6 内部待测版</title>
+<title>PPT-AI 课堂助手</title>
 <style>
 *{box-sizing:border-box}
 :root{color-scheme:dark}
@@ -41,7 +41,7 @@ label{display:block;font-weight:600;margin-bottom:6px}textarea{display:block;wid
 <body>
 <main id="app">
   <header>
-    <h1>PPT-AI 0.4.0-internal.6 内部待测版</h1>
+    <h1 id="app-title">PPT-AI 课堂助手</h1>
     <div class="header-actions"><span id="scene" class="badge">普通窗口</span><button id="gear" type="button">设置</button><button id="hide" type="button">收起</button></div>
   </header>
   <div id="status" role="status" aria-live="polite">待机</div>
@@ -77,6 +77,11 @@ const MAX_QUESTION_CHARS = 300;
 const QUESTION_LIMIT_ERROR = '问题或补充要求超过 300 字，请删减后再发送，文字已保留。';
 let task = 'ask', selectionId = null, pendingImages = [];
 let pendingSources = [], sourcesPending = false;
+let microphoneId = '';
+const settingsReady = window.m1.settingsInfo().then(info => {
+  microphoneId = typeof info.microphoneId === 'string' ? info.microphoneId : '';
+  if (info.label) { $('app-title').textContent = info.label; document.title = info.label; }
+}).catch(() => {});
 let currentRequestId = null, requestBusy = false, resultTask = 'ask', canPlace = false;
 let raw = '', translations = [], renderFrame = null, requestSequence = 0, toastTimer = null, viewEpoch = 0;
 let audioEpoch = 0, recSession = null, micState = 'idle';
@@ -232,7 +237,7 @@ function renderEditor(){
     if (source.error || source.confidence < 0.8) { const warning = document.createElement('div'); warning.className = 'source-warning'; warning.textContent = source.error || '这段原文识别把握较低，请对照图片校正后再发送。'; section.append(warning); }
     editors.append(section);
   });
-  $('selection-hint').textContent = translated ? '本机识别不上传。确认后发送各区原文；勾选图片翻译的区域才发送图片。补充要求最多 300 字，原文另计每区最多 12000 字。' :
+  $('selection-hint').textContent = translated ? '本机识别不上传。确认后发送各区原文；勾选图片翻译的区域才发送图片。补充要求最多 300 字，原文每区最多 12000 字、整批 40000 字；长文建议拆分，单次仍受模型输出和等待时长限制。' :
     pendingImages.length ? '请检查以上 ' + pendingImages.length + ' 张图片；确认后才会发送，最多 5 张。' : '只有点击发送后，问题才会送往 DeepSeek。';
   updateCount(); updateControls();
 }
@@ -336,7 +341,10 @@ async function startRecording(source = 'button', replace = false){
   const session = { epoch: ++audioEpoch, source, replace, stream: null, recorder: null, chunks: [], timer: null, discard: false, stopping: false };
   recSession = session; micState = 'starting'; setErr(''); setStatus('正在打开麦克风…'); updateControls();
   try {
-    const acquired = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    await settingsReady;
+    if (!isCurrentAudio(session)) return;
+    const acquired = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true,
+      ...(microphoneId ? { deviceId: { exact: microphoneId } } : {}) } });
     if (!isCurrentAudio(session)) { stopTracks(acquired); return; }
     session.stream = acquired;
     const preferred = 'audio/webm;codecs=opus';
@@ -436,12 +444,19 @@ $('edit').onclick = () => { confirmBox.classList.remove('hidden'); renderEditor(
 $('place').onclick = () => placeResult();
 q.addEventListener('input', updateCount);
 q.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); } });
-document.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); clearAll(true); } });
+document.addEventListener('keydown', async event => {
+  if (event.key !== 'Escape' || event.isComposing || event.repeat) return;
+  event.preventDefault();event.stopPropagation();
+  await stopRequest();
+  try { await window.m1.hidePanel(); await window.m1.focusShow(); } catch (_) {}
+});
 
 window.m1.onRec(value => {
   if (value) startRecording('shortcut', false);
   else if (recSession && recSession.source === 'shortcut') stopRecording();
 });
+window.m1.onAppInfo(info => { if (info?.label) { $('app-title').textContent = info.label; document.title = info.label; } });
+window.m1.onMicrophone(value => { microphoneId = typeof value?.id === 'string' ? value.id : ''; });
 window.m1.onVoice(() => {
   const hadRequest = requestBusy;
   resetLocal('点击“开始录音”，录完后确认文字再发送');

@@ -22,3 +22,8 @@ covered by the project's Apache-2.0 license.
 
 DeepSeek is an external service; its terms and privacy policy are separate.
 SignPath Foundation has not approved or signed this project's current builds.
+
+The preview installer additionally bundles the official Microsoft Visual C++
+x64 Redistributable installer. Microsoft license terms remain separate; see
+third_party/VC-REDIST-NOTICE.md. It is run only on the target device as part of
+installation when the required runtime is absent or older.

@@ -21,6 +21,9 @@ coverage/
 vendor/
 app/asr/
 app/ocr-runtime/
+/app/build/vendor/
+/app/build/generated/
+/deliveries/
 *.bin
 
 # Captures and local evidence
