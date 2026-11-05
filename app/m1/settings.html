@@ -8,7 +8,8 @@ h3{margin:0 0 8px;font-size:14px;color:#93c5fd}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 input[type=password],select{background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:7px;padding:7px;font:14px "Microsoft YaHei",sans-serif}
 input[type=password]{flex:1;min-width:300px}
-button{padding:7px 12px;border:0;border-radius:7px;background:#374151;color:#e5e7eb;cursor:pointer}
+button{padding:9px 12px;min-height:44px;border:0;border-radius:7px;background:#374151;color:#e5e7eb;cursor:pointer;touch-action:manipulation}
+@media(max-width:600px){body{padding:10px}input[type=password],#micSel{min-width:0!important;width:100%}.row{align-items:stretch}}
 button.p{background:#2563eb;color:#fff}
 #level{height:10px;background:#0b1220;border-radius:5px;overflow:hidden;margin-top:8px;border:1px solid #1f2937}
 #level > i{display:block;height:100%;width:0;background:#22c55e;transition:width .05s}
@@ -62,6 +63,7 @@ code{background:#0b1220;padding:1px 5px;border-radius:4px}
 <script>
 const $ = id => document.getElementById(id);
 let stream = null, audioCtx = null, analyser = null, raf = null, mr = null, chunks = [], lastBlob = null;
+let micEpoch = 0, micBusy = false, closing = false, micTimer = null, playback = null, playbackUrl = null;
 
 function setMsg(t, ok){ $('msg').textContent = t; $('msg').className = ok === true ? 'ok' : ok === false ? 'bad' : ''; }
 function setAsr(t, meta){ $('asrText').textContent = t || ''; $('asrMeta').textContent = meta || ''; }
@@ -72,7 +74,7 @@ async function loadInfo(){
     ? '已保存（DPAPI 加密）：<span class="ok">可读取，连接状态请点击测试连接</span>'
     : '<span class="bad">未配置 Key</span>';
   $('modelInfo').innerHTML = `云端模型：<code>${info.model}</code>；本地识别：<code>${info.asrModel}</code>（${info.asrMB} MB）<br>设置文件：<code>${info.settingsPath}</code>`;
-  $('dataNote').innerHTML = '发送给 DeepSeek：识别后的文字 + 圈选区域图片（最多 5 张）。<br>不发送：课堂音频（本机识别）、完整屏幕、问答历史（默认不落盘）。';
+  $('dataNote').innerHTML = '点击发送后，圈选问答会把确认的文字和矩形裁图发送给 DeepSeek（最多 5 区）。中英互译默认只发送你确认或校正的原文，只有勾选图片翻译的区域才发送对应图片。课堂音频和翻译原文识别在本机完成。<br>空白定位在本机分析屏幕，不额外发送整屏；不附上历史问答。音频、截屏和问答正文不由应用主动保存。';
   $('hotkeys').innerHTML = Object.entries(info.hotkeys).map(([k,v]) => `<code>${v}</code> ${k}`).join('　');
   await loadMics();
 }
@@ -125,8 +127,9 @@ function stopLevel(){
 async function toWav(blob){
   const ab = await blob.arrayBuffer();
   const ac = new AudioContext();
-  const audio = await ac.decodeAudioData(ab);
-  await ac.close();
+  let audio;
+  try { audio = await ac.decodeAudioData(ab); }
+  finally { await ac.close(); }
   const target = 16000;
   const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(audio.duration*target)), target);
   const src = off.createBufferSource(); src.buffer = audio; src.connect(off.destination); src.start();
@@ -146,36 +149,51 @@ async function toWav(blob){
 
 $('testMic').onclick = () => runMicTest();
 async function runMicTest(){
+  if (micBusy || closing) return;
+  const generation = ++micEpoch;
+  busy(true);
   try {
     setMsg(''); setAsr('', '录音 3 秒…');
     stopLevel();
     await openMic();
+    if (closing || generation !== micEpoch) { stopLevel(); return; }
     startLevel();
     chunks = [];
     mr = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
     mr.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
     mr.onstop = async () => {
       stopLevel();
+      if (closing || generation !== micEpoch) return;
       const blob = new Blob(chunks, { type: 'audio/webm' });
       lastBlob = blob;
       try {
         if (blob.size < 1000) { setAsr('', '录音太短'); return; }
         const t0 = performance.now();
-        const res = await window.m1.asr(await toWav(blob));
+        const wav = await toWav(blob);
+        if (closing || generation !== micEpoch) return;
+        const res = await window.m1.asr(wav);
+        if (closing || generation !== micEpoch) return;
         const ms = Math.round(performance.now() - t0);
         if (!res.ok) { setAsr('', '识别失败：' + (res.error || '')); return; }
         setAsr(res.text || '（空）', `识别耗时 ${ms} ms`);
       } catch (e) { setAsr('', '识别异常：' + e.message); }
-      finally { busy(false); }
+      finally { if (!closing && generation === micEpoch) busy(false); }
     };
     mr.start();
     busy(true);
-    setTimeout(() => { try { mr.stop(); } catch(e){} }, 3000);
+    const recorder = mr;
+    micTimer = setTimeout(() => { try { recorder.stop(); } catch(e){} stopLevel(); }, 3000);
   } catch (e) { setMsg('麦克风不可用：' + e.message, false); stopLevel(); busy(false); }
 }
-function busy(b){ $('testMic').disabled = b; $('testMic').textContent = b ? '录音中…' : '开始测试（3 秒）'; }
+function busy(b){ micBusy = b; $('testMic').disabled = b; $('testMic').textContent = b ? '测试中…' : '开始测试（3 秒）'; }
 
-$('play').onclick = () => { if (!lastBlob) { setMsg('还没有录音', false); return; } const a = new Audio(URL.createObjectURL(lastBlob)); a.play(); };
+$('play').onclick = () => {
+  if (!lastBlob) { setMsg('还没有录音', false); return; }
+  if (playback) playback.pause();
+  if (playbackUrl) URL.revokeObjectURL(playbackUrl);
+  playbackUrl = URL.createObjectURL(lastBlob); playback = new Audio(playbackUrl);
+  playback.play().catch(() => setMsg('回放失败，请重试', false));
+};
 
 $('saveKey').onclick = async () => {
   const k = $('key').value.trim();
@@ -187,11 +205,20 @@ $('saveKey').onclick = async () => {
 $('testKey').onclick = async () => {
   setMsg('测试中…');
   const r = await window.m1.testKey($('key').value.trim());
-  if (r.ok) setMsg('连接成功；模型：' + (r.models || []).join(', ') + (r.hasFlash ? '（deepseek-flash 可用）' : ''), true);
+  if (r.ok) setMsg('模型列表可访问，deepseek-flash 已列出；实际问答还需你发送样例核验。', true);
   else setMsg('连接失败：' + r.error, false);
 };
 $('openLogs').onclick = () => window.m1.openLogs();
 $('close').onclick = () => window.close();
+function cleanup(){
+  closing = true; micEpoch++; clearTimeout(micTimer);
+  try { if (mr && mr.state !== 'inactive') mr.stop(); } catch (_) {}
+  stopLevel();
+  if (playback) playback.pause();
+  if (playbackUrl) URL.revokeObjectURL(playbackUrl);
+}
+window.addEventListener('pagehide', cleanup);
+window.addEventListener('beforeunload', cleanup);
 loadInfo();
 </script>
 </body></html>

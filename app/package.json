@@ -1,6 +1,6 @@
 {
   "name": "ppt-ai",
-  "version": "0.3.0",
+  "version": "0.4.0-internal.6",
   "private": true,
   "description": "PPT-AI 课堂助手",
   "author": "PPT-AI",
@@ -39,6 +39,18 @@
       {
         "from": "m1/detector.ps1",
         "to": "detector.ps1"
+      },
+      {
+        "from": "ocr-runtime",
+        "to": "ocr-runtime"
+      },
+      {
+        "from": "m1/ocr-worker.py",
+        "to": "ocr-worker.py"
+      },
+      {
+        "from": "m1/slide-text.ps1",
+        "to": "slide-text.ps1"
       }
     ],
     "win": {

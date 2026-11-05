@@ -1,7 +1,82 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'; font-src 'self' data:"><style>
-html,body{margin:0;background:transparent;overflow:hidden;user-select:none}
-#ball{width:80px;height:80px;border-radius:50%;margin:8px;background:#2563eb;color:#fff;
-display:flex;align-items:center;justify-content:center;font:700 22px "Microsoft YaHei",sans-serif;
-box-shadow:0 4px 16px rgba(0,0,0,.35);border:2px solid rgba(255,255,255,.85)}
-</style></head><body><div id="ball" onclick="window.m1.startLasso()">AI</div></body></html>
+html,body{margin:0;background:transparent;overflow:hidden;user-select:none;touch-action:none}
+#ball{box-sizing:border-box;width:80px;height:80px;border-radius:50%;margin:8px 0 0 8px;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;font:700 22px "Microsoft YaHei",sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.35);border:2px solid rgba(255,255,255,.85);cursor:pointer;touch-action:none}
+#ball:focus-visible{outline:3px solid #93c5fd;outline-offset:3px}
+#status{position:absolute;left:4px;top:90px;max-width:88px;box-sizing:border-box;padding:2px 7px;border-radius:10px;background:rgba(15,23,42,.94);color:#fff;font:12px/16px "Microsoft YaHei",sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+#status[hidden]{display:none}
+</style></head><body>
+<div id="ball" role="button" tabindex="0" aria-label="轻点圈选提问，右键或长按打开菜单，拖动调整位置">AI</div>
+<div id="status" role="status" aria-live="polite" hidden></div>
+<script>
+const ball = document.getElementById('ball');
+const badge = document.getElementById('status');
+let gesture = null;
+let menuAt = 0;
+const DRAG_DISTANCE = 8;
+function stopTimer(g) { if (g && g.timer) { clearTimeout(g.timer); g.timer = null; } }
+function menu() {
+  if (Date.now() - menuAt < 400) return;
+  menuAt = Date.now();
+  window.m1.petMenu();
+}
+function finishGesture(e, cancelled) {
+  const g = gesture;
+  if (!g || (e && e.pointerId !== g.id)) return;
+  gesture = null;
+  stopTimer(g);
+  if (g.dragging) {
+    window.m1.petDrag({phase:'end',screenX:e ? e.screenX : g.lastX,screenY:e ? e.screenY : g.lastY});
+  } else if (!cancelled && !g.longPressed) {
+    window.m1.startLasso('ask');
+  }
+  if (ball.hasPointerCapture(g.id)) ball.releasePointerCapture(g.id);
+}
+ball.addEventListener('pointerdown', e => {
+  if (gesture || !e.isPrimary || e.button !== 0) return;
+  e.preventDefault();
+  const g = {id:e.pointerId,x:e.screenX,y:e.screenY,lastX:e.screenX,lastY:e.screenY,dragging:false,longPressed:false,timer:null};
+  gesture = g;
+  try { ball.setPointerCapture(e.pointerId); } catch (_) { gesture = null; return; }
+  if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+    g.timer = setTimeout(() => {
+      if (gesture !== g || g.dragging) return;
+      g.longPressed = true;
+      g.timer = null;
+      menu();
+    }, 600);
+  }
+});
+ball.addEventListener('pointermove', e => {
+  const g = gesture;
+  if (!g || e.pointerId !== g.id || g.longPressed) return;
+  g.lastX = e.screenX; g.lastY = e.screenY;
+  if (!g.dragging && Math.hypot(e.screenX - g.x, e.screenY - g.y) >= DRAG_DISTANCE) {
+    stopTimer(g);
+    g.dragging = true;
+    window.m1.petDrag({phase:'start',screenX:g.x,screenY:g.y});
+  }
+  if (g.dragging) window.m1.petDrag({phase:'move',screenX:e.screenX,screenY:e.screenY});
+});
+ball.addEventListener('pointerup', e => { e.preventDefault(); finishGesture(e, false); });
+ball.addEventListener('pointercancel', e => finishGesture(e, true));
+ball.addEventListener('lostpointercapture', e => finishGesture(e, true));
+ball.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (gesture) { gesture.longPressed = true; stopTimer(gesture); }
+  menu();
+});
+ball.addEventListener('click', e => e.preventDefault());
+ball.addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); window.m1.startLasso('ask'); }
+  if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) { e.preventDefault(); menu(); }
+});
+window.addEventListener('blur', () => finishGesture(null, true));
+window.m1.onPetStatus(({text} = {}) => {
+  const value = typeof text === 'string' ? text.slice(0, 48) : '';
+  badge.textContent = value;
+  badge.hidden = !value;
+});
+</script></body></html>
+

@@ -1,193 +1,515 @@
 <!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'; font-src 'self' data:"><style>
-*{box-sizing:border-box}
-body{margin:0;font:15px/1.55 "Microsoft YaHei",sans-serif;background:#111827;color:#e5e7eb;overflow:hidden}
-#app{height:100vh;display:flex;flex-direction:column;padding:12px 14px}
-header{display:flex;align-items:center;justify-content:space-between;font-weight:700;font-size:16px}
-.badge{font-size:11px;font-weight:400;background:#1e3a8a;color:#bfdbfe;padding:2px 8px;border-radius:10px}
-#status{font-size:12px;color:#9ca3af;margin:6px 0}
-#mic{width:100%;padding:10px;border:0;border-radius:8px;background:#1d4ed8;color:#fff;font-size:15px;font-weight:600;cursor:pointer}
-#mic.rec{background:#dc2626}
-textarea{width:100%;height:78px;resize:none;background:#0b1220;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:8px;font:15px "Microsoft YaHei",sans-serif;margin-top:8px}
-.row{display:flex;gap:8px;margin-top:8px}
-button.act{flex:1;padding:7px;border:0;border-radius:7px;background:#374151;color:#e5e7eb;cursor:pointer}
-button.primary{background:#2563eb;color:#fff}
-button.danger{background:#7f1d1d;color:#fecaca}
-#answer{flex:1;display:flex;flex-direction:column;min-height:0;margin-top:8px}
-#text{flex:1;overflow:auto;white-space:pre-wrap;background:#0b1220;border:1px solid #1f2937;border-radius:8px;padding:10px;font-size:16px;line-height:1.65}
-.katex-display{overflow-x:auto;overflow-y:hidden;margin:6px 0}
-#thumbs{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-#thumbs img{max-height:78px;max-width:48%;border-radius:6px;border:1px solid #374151}
-#err{color:#fca5a5;font-size:12px;margin-top:6px;min-height:16px}
-.hidden{display:none!important}
-#hint{font-size:12px;color:#6b7280;margin-top:6px}
-</style><link rel="stylesheet" href="../node_modules/katex/dist/katex.min.css">
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'; font-src 'self' data:">
+<link rel="stylesheet" href="../node_modules/katex/dist/katex.min.css">
 <script src="../node_modules/katex/dist/katex.min.js"></script>
-</head><body><div id="app">
-<header><span>PPT-AI 课堂助手</span><span><button id="gear" style="border:0;background:#374151;color:#e5e7eb;border-radius:6px;padding:3px 8px;margin-right:6px;cursor:pointer">设置</button><span class="badge">云端 · deepseek-flash</span></span></header><div id="status">待机</div>
-<button id="mic">按住说话（Ctrl+Alt+Space）</button>
-<div id="hint">松手后先确认识别文本，再发送。Esc 取消。</div>
-
-<div id="confirm" class="hidden">
-  <div id="thumbs" class="hidden"></div>
-  <textarea id="q" placeholder="识别结果，可修改…"></textarea>
-  <div class="row">
-    <button class="act primary" id="send">发送</button>
-    <button class="act" id="again">重说</button>
-    <button class="act hidden" id="skip">跳过直接问</button>
-    <button class="act" id="cancel">取消</button>
-  </div>
-</div>
-
-<div id="answer" class="hidden">
-  <div id="text"></div>
-  <div class="row">
-    <button class="act danger" id="stop">停止</button>
-    <button class="act" id="copy">复制</button>
-    <button class="act" id="close">关闭</button>
-  </div>
-</div>
-
-<div id="err"></div>
-</div>
+<script src="text-render.js"></script>
+<title>PPT-AI 0.4.0-internal.6 内部待测版</title>
+<style>
+*{box-sizing:border-box}
+:root{color-scheme:dark}
+body{margin:0;font:15px/1.6 "Microsoft YaHei",sans-serif;background:#111827;color:#e5e7eb;overflow:auto}
+#app{min-height:100vh;padding:14px;display:flex;flex-direction:column;gap:12px;min-width:0}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+h1{font-size:18px;margin:0}h2{font-size:16px;margin:0 0 8px}
+.header-actions,.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.badge{font-size:12px;background:#1e3a8a;color:#bfdbfe;padding:3px 9px;border-radius:12px}
+.muted,.hint{font-size:12px;color:#9ca3af}.hint{margin:6px 0 0}
+#status{font-size:14px;min-height:23px}#err{color:#fca5a5;white-space:pre-wrap;overflow-wrap:anywhere}
+button,select{font:inherit;min-height:44px;border:1px solid #475569;border-radius:8px;background:#374151;color:#f8fafc;padding:8px 13px;touch-action:manipulation}
+button{cursor:pointer}button:disabled{opacity:.5;cursor:default}button:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}
+button.primary{background:#2563eb;border-color:#3b82f6}button.danger{background:#7f1d1d;border-color:#b91c1c;color:#fee2e2}
+#mic{flex:1;min-width:190px;font-weight:700;background:#1d4ed8;border-color:#3b82f6}#mic.rec{background:#b91c1c;border-color:#ef4444}
+.card{background:#0b1220;border:1px solid #334155;border-radius:10px;padding:12px;min-width:0}
+label{display:block;font-weight:600;margin-bottom:6px}textarea{display:block;width:100%;min-height:96px;resize:vertical;background:#111827;color:#f8fafc;border:1px solid #475569;border-radius:8px;padding:10px;font:16px/1.6 "Microsoft YaHei",sans-serif;overflow-wrap:anywhere}
+.editor-meta{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:5px 0 12px}
+#count.over-limit{color:#fca5a5;font-weight:700}
+#thumbs{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:12px}figure{margin:0;min-width:0}figure img{display:block;max-width:100%;width:100%;height:100px;object-fit:contain;background:#f1f5f9;border:1px solid #64748b;border-radius:6px}figcaption{font-size:12px;color:#cbd5e1;margin-top:3px}
+#direction-row{margin-bottom:12px}#direction-row label{font-weight:400;margin:0}#direction{min-width:150px}
+#source-editors{margin-bottom:12px}.source-editor{margin:10px 0;padding:10px;border:1px solid #475569;border-radius:8px}.source-editor textarea{min-height:76px}.source-mode{font-size:13px;font-weight:400;display:flex;align-items:center;gap:8px;margin:8px 0}.source-mode input{width:20px;height:20px;flex:0 0 20px}.source-warning{color:#fcd34d;font-size:13px;white-space:pre-wrap}.source-preview{display:block;width:100%;height:120px;background:#f1f5f9;border:1px solid #64748b;border-radius:6px}.placement-note{font-size:13px;color:#93c5fd;margin-top:6px}
+#answer{min-height:130px}#text,.translation-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:1.7}#text:empty{min-height:34px}
+.translation-card{padding:12px 0;border-top:1px solid #334155}.translation-card:first-child{padding-top:0;border-top:0}.translation-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:7px}.translation-head strong{font-size:14px}.translation-error{color:#fca5a5;font-size:13px}
+.katex-display{overflow-x:auto;overflow-y:hidden;margin:8px 0}.result-actions{margin-top:12px}.result-actions button{flex:1;min-width:100px}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:10;max-width:calc(100vw - 28px);padding:10px 16px;border-radius:8px;background:#14532d;border:1px solid #4ade80;color:#f0fdf4;box-shadow:0 4px 16px #0008;pointer-events:none;overflow-wrap:anywhere}#toast.bad{background:#7f1d1d;border-color:#f87171}
+.hidden{display:none!important}
+@media(max-width:430px){#app{padding:10px;gap:10px}.header-actions{width:100%;justify-content:space-between}.row>*{flex:1}.row label{flex:none}#thumbs{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body>
+<main id="app">
+  <header>
+    <h1>PPT-AI 0.4.0-internal.6 内部待测版</h1>
+    <div class="header-actions"><span id="scene" class="badge">普通窗口</span><button id="gear" type="button">设置</button><button id="hide" type="button">收起</button></div>
+  </header>
+  <div id="status" role="status" aria-live="polite">待机</div>
+  <section aria-label="录音">
+    <div class="row"><button id="mic" type="button" aria-pressed="false">开始录音</button><button id="clear" type="button">清除本次</button></div>
+    <p id="mic-hint" class="hint">点一下开始，再点一下停止；快捷键 Ctrl+Alt+Space 按住说话、松开停止。每次最长 30 秒。</p>
+  </section>
+  <section id="confirm" class="card" aria-labelledby="editor-title">
+    <h2 id="editor-title">确认问题后发送</h2>
+    <div id="thumbs" class="hidden" aria-label="将发送的圈选图片"></div>
+    <div id="direction-row" class="row hidden"><label for="direction">翻译方向</label><select id="direction"><option value="auto">自动识别中英</option><option value="zh-en">中文 → 英文</option><option value="en-zh">英文 → 中文</option></select></div>
+    <div id="source-editors" class="hidden" aria-label="确认本机识别的原文"></div>
+    <label id="question-label" for="q">问题</label>
+    <textarea id="q" aria-describedby="selection-hint count" placeholder="可输入问题，也可录音后检查并修改识别文字，最多 300 字。"></textarea>
+    <div class="editor-meta"><span id="selection-hint" class="muted">只有点击发送后，问题和本次图片才会送往 DeepSeek。</span><span id="count" class="muted" aria-live="polite">0 / 300</span></div>
+    <div class="row"><button id="send" class="primary" type="button">确认发送</button><button id="again" type="button">重说（替换文字）</button><button id="cancel" type="button">取消本次</button></div>
+  </section>
+  <section id="answer" class="card hidden" aria-labelledby="answer-title">
+    <h2 id="answer-title">回答</h2>
+    <div id="text" aria-live="off"></div>
+    <div id="translations" class="hidden"></div>
+    <div class="row result-actions"><button id="stop" class="danger hidden" type="button">停止请求</button><button id="copy" type="button">复制全部回答</button><button id="place" class="hidden" type="button">选择放置区域 / 重新放置</button><button id="edit" type="button">返回编辑</button></div>
+  </section>
+  <div id="err" role="alert"></div>
+</main>
+<div id="toast" class="hidden" role="status" aria-live="polite"></div>
 <script>
+'use strict';
 const $ = id => document.getElementById(id);
 const micBtn = $('mic'), q = $('q'), confirmBox = $('confirm'), answerBox = $('answer');
-const textEl = $('text'), statusEl = $('status'), errEl = $('err');
-let recording = false, mr = null, stream = null, chunks = [];
-let raw = '', shown = 0, timer = null, doneFlag = false, active = false;
-let mode = 'voice', pendingImages = [];
-const thumbsEl = $('thumbs'), skipBtn = $('skip');
+const textEl = $('text'), translationsEl = $('translations');
+const MAX_QUESTION_CHARS = 300;
+const QUESTION_LIMIT_ERROR = '问题或补充要求超过 300 字，请删减后再发送，文字已保留。';
+let task = 'ask', selectionId = null, pendingImages = [];
+let pendingSources = [], sourcesPending = false;
+let currentRequestId = null, requestBusy = false, resultTask = 'ask', canPlace = false;
+let raw = '', translations = [], renderFrame = null, requestSequence = 0, toastTimer = null, viewEpoch = 0;
+let audioEpoch = 0, recSession = null, micState = 'idle';
+const audioContexts = new Set();
 
-function setStatus(s){ statusEl.textContent = s; }
-function setErr(s){ errEl.textContent = s || ''; }
-function showConfirm(t){ q.value = t; confirmBox.classList.remove('hidden'); answerBox.classList.add('hidden'); micBtn.classList.remove('hidden'); skipBtn.classList.add('hidden'); thumbsEl.classList.add('hidden'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
-function hideConfirm(){ confirmBox.classList.add('hidden'); }
-
-function resetAnswer(){ raw=''; shown=0; doneFlag=false; active=true; mode='voice'; pendingImages=[]; thumbsEl.innerHTML=''; thumbsEl.classList.add('hidden'); skipBtn.classList.add('hidden'); textEl.innerHTML=''; answerBox.classList.remove('hidden'); confirmBox.classList.add('hidden'); micBtn.classList.add('hidden'); if(timer){clearInterval(timer);timer=null;} }
-function escHtml(s){ return s.replace(/[&<>]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;' }[c])); }
-function renderMath(s){
-  const re = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\$([^$\n]+?)\$|\\\(([\s\S]+?)\\\)/g;
-  let out = '', last = 0, m;
-  while ((m = re.exec(s))) {
-    out += escHtml(s.slice(last, m.index));
-    const tex = m[1] || m[2] || m[3] || m[4] || '';
-    const display = !!(m[1] || m[2]);
-    try { out += katex.renderToString(tex, { displayMode: display, throwOnError: false, strict: false }); }
-    catch (e) { out += escHtml(m[0]); }
-    last = m.index + m[0].length;
+function setStatus(value){ $('status').textContent = value; }
+function setErr(value){ $('err').textContent = value || ''; }
+function questionCharCount(value){ return Array.from(value).length; }
+function updateCount(){
+  const count = questionCharCount(q.value), overLimit = count > MAX_QUESTION_CHARS;
+  $('count').textContent = count + ' / ' + MAX_QUESTION_CHARS + (overLimit ? '（超出 ' + (count - MAX_QUESTION_CHARS) + ' 字，请删减）' : '');
+  $('count').classList.toggle('over-limit', overLimit);
+  q.setAttribute('aria-invalid', String(overLimit));
+  if (!overLimit && $('err').textContent === QUESTION_LIMIT_ERROR) {
+    setErr('');
+    if ($('status').textContent === '识别文字已完整保留，请删减到 300 字以内') setStatus('请检查识别文字，确认后发送');
   }
-  out += escHtml(s.slice(last));
-  return out;
+  return count;
 }
-function tick(){
-  if(shown < raw.length){ shown = Math.min(raw.length, shown + 2); textEl.innerHTML = renderMath(raw.slice(0, shown)); textEl.scrollTop = textEl.scrollHeight; }
-  else if(doneFlag){ clearInterval(timer); timer=null; }
+function messageOf(error, fallback){ return error && typeof error.message === 'string' ? error.message : fallback; }
+function isCurrentAudio(session){ return recSession === session && session.epoch === audioEpoch && !session.discard; }
+function stopTracks(stream){ if (stream) stream.getTracks().forEach(track => { try { track.stop(); } catch (_) {} }); }
+function closeAudioContext(context){
+  audioContexts.delete(context);
+  try { if (context.state !== 'closed') Promise.resolve(context.close()).catch(() => {}); } catch (_) {}
 }
-function pushDelta(t){ raw += t; if(!timer) timer = setInterval(tick, 28); }
-
-async function toWav(blob){
-  const ab = await blob.arrayBuffer();
-  const ac = new (window.AudioContext || window.webkitAudioContext)();
-  const audio = await ac.decodeAudioData(ab);
-  const target = 16000;
-  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(audio.duration * target)), target);
-  const src = off.createBufferSource(); src.buffer = audio; src.connect(off.destination); src.start();
-  const rendered = await off.startRendering();
-  const samples = rendered.getChannelData(0);
-  const len = samples.length;
-  const buf = new ArrayBuffer(44 + len * 2), v = new DataView(buf);
-  const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-  ws(0,'RIFF'); v.setUint32(4, 36 + len*2, true); ws(8,'WAVE'); ws(12,'fmt ');
-  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
-  v.setUint32(24,target,true); v.setUint32(28,target*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
-  ws(36,'data'); v.setUint32(40,len*2,true);
-  let o = 44;
-  for (let i = 0; i < len; i++) { let s = Math.max(-1, Math.min(1, samples[i])); v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7FFF, true); o += 2; }
-  return buf;
+function updateControls(){
+  const audioBusy = micState !== 'idle';
+  micBtn.classList.toggle('rec', micState === 'recording' || micState === 'starting');
+  micBtn.setAttribute('aria-pressed', String(micState === 'recording' || micState === 'starting'));
+  micBtn.textContent = micState === 'starting' ? '取消启动录音' : micState === 'recording' ? '停止录音' : micState === 'processing' ? '识别中…' : '开始录音';
+  micBtn.disabled = requestBusy || micState === 'processing';
+  $('again').textContent = micState === 'starting' || micState === 'recording' ? '停止重说' : '重说（替换文字）';
+  $('again').disabled = requestBusy || micState === 'processing';
+  $('send').disabled = requestBusy || audioBusy || (task === 'translate' && sourcesPending);
+  $('direction').disabled = requestBusy || audioBusy;
+  q.disabled = requestBusy;
+  $('source-editors').querySelectorAll('textarea,input').forEach(input => { input.disabled = requestBusy || sourcesPending || (input.tagName === 'TEXTAREA' && input.dataset.imageMode === 'true'); });
+  $('stop').classList.toggle('hidden', !requestBusy);
+  $('edit').disabled = requestBusy;
+  $('place').classList.toggle('hidden', !canPlace || requestBusy);
+  $('copy').disabled = resultTask === 'translate' ? !translations.some(item => item.text && !item.error) : !raw;
 }
-function b64(buf){ const u = new Uint8Array(buf); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); }
-
-async function startRec(){
-  if (recording) return;
-  setErr(''); setStatus('录音中…');
+function cancelAudio(){
+  audioEpoch++;
+  const session = recSession;
+  recSession = null;
+  if (session) {
+    session.discard = true;
+    clearTimeout(session.timer);
+    if (session.recorder) {
+      session.recorder.ondataavailable = null;
+      session.recorder.onstop = null;
+      session.recorder.onerror = null;
+      try { if (session.recorder.state !== 'inactive') session.recorder.stop(); } catch (_) {}
+    }
+    stopTracks(session.stream);
+    session.chunks.length = 0;
+  }
+  for (const context of Array.from(audioContexts)) closeAudioContext(context);
+  micState = 'idle';
+  updateControls();
+}
+function cancelRender(){ if (renderFrame !== null) cancelAnimationFrame(renderFrame); renderFrame = null; }
+function renderMath(value){ return window.PPTText.renderMath(value); }
+function renderAnswer(){ textEl.innerHTML = renderMath(raw); }
+function scheduleAnswer(){ if (renderFrame === null) renderFrame = requestAnimationFrame(() => { renderFrame = null; renderAnswer(); }); }
+function normalizeTranslations(value){
+  if (!Array.isArray(value)) return [];
+  const byIndex = new Map();
+  for (const item of value) {
+    if (!item || !Number.isInteger(item.index) || item.index < 0 || item.index > 4) continue;
+    byIndex.set(item.index, { index: item.index, text: typeof item.text === 'string' ? item.text : '', error: typeof item.error === 'string' ? item.error : '',
+      placement: item.placement === 'overlay' ? 'overlay' : 'panel', placementReason: typeof item.placementReason === 'string' ? item.placementReason : '' });
+  }
+  return Array.from(byIndex.values()).sort((a, b) => a.index - b.index);
+}
+function renderTranslations(){
+  translationsEl.replaceChildren();
+  for (const item of translations) {
+    const card = document.createElement('div'); card.className = 'translation-card';
+    const head = document.createElement('div'); head.className = 'translation-head';
+    const title = document.createElement('strong'); title.textContent = '区域 ' + (item.index + 1);
+    const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = '复制这段译文'; copy.disabled = !item.text || !!item.error;
+    copy.onclick = () => copyText(item.text);
+    const actions = document.createElement('div'); actions.className = 'row'; actions.append(copy);
+    if (canPlace && !requestBusy && !item.error) {
+      const place = document.createElement('button'); place.type = 'button'; place.textContent = '放置这段译文'; place.disabled = !item.text;
+      place.onclick = () => placeResult(item.index); actions.append(place);
+    }
+    head.append(title, actions);
+    const body = document.createElement('div'); body.className = 'translation-text'; body.textContent = item.text;
+    card.append(head, body);
+    if (item.error) { const error = document.createElement('div'); error.className = 'translation-error'; error.textContent = item.error; card.append(error); }
+    if (item.placementReason) { const note = document.createElement('div'); note.className = 'placement-note'; note.textContent = item.placementReason; card.append(note); }
+    translationsEl.append(card);
+  }
+}
+function showResult(){
+  answerBox.classList.remove('hidden');
+  const translated = resultTask === 'translate';
+  $('answer-title').textContent = translated ? '翻译结果' : '回答';
+  $('copy').textContent = translated ? '按顺序复制全部译文' : '复制全部回答';
+  $('place').textContent = translated ? '放置未显示的译文' : '选择放置区域 / 重新放置';
+  textEl.classList.toggle('hidden', translated);
+  translationsEl.classList.toggle('hidden', !translated);
+  if (translated) renderTranslations(); else renderAnswer();
+  updateControls();
+}
+function renderEditor(){
+  const translated = task === 'translate';
+  $('editor-title').textContent = translated ? '确认原文后翻译' : '确认问题后发送';
+  $('question-label').textContent = translated ? '术语或补充要求（选填）' : '问题';
+  q.placeholder = translated ? '例如：保留专有名词。也可以留空，最多 300 字。' : '可输入问题，也可录音后检查并修改识别文字，最多 300 字。';
+  $('send').textContent = translated ? '确认并翻译' : '确认发送';
+  $('direction-row').classList.toggle('hidden', !translated);
+  const thumbs = $('thumbs'); thumbs.replaceChildren();
+  pendingImages.forEach((source, index) => {
+    const figure = document.createElement('figure');
+    const original = pendingSources.find(item => item.id === index);
+    let preview;
+    if (translated && original?.selectionRect && original.lines?.length) {
+      const ns = 'http://www.w3.org/2000/svg', r = original.selectionRect;
+      preview = document.createElementNS(ns, 'svg'); preview.classList.add('source-preview');
+      preview.setAttribute('viewBox', '0 0 ' + r.width + ' ' + r.height); preview.setAttribute('role', 'img');
+      preview.setAttribute('aria-label', '区域 ' + (index + 1) + ' 原文与识别出的文字范围');
+      const image = document.createElementNS(ns, 'image'); image.setAttribute('href', source);
+      image.setAttribute('width', r.width); image.setAttribute('height', r.height); image.setAttribute('preserveAspectRatio', 'none'); preview.append(image);
+      original.lines.forEach(line => {
+        const box = line.rect; if (!box) return;
+        const mark = document.createElementNS(ns, 'rect');
+        mark.setAttribute('x', box.x - r.x); mark.setAttribute('y', box.y - r.y); mark.setAttribute('width', box.width); mark.setAttribute('height', box.height);
+        mark.setAttribute('fill', 'none'); mark.setAttribute('stroke', '#2563eb'); mark.setAttribute('stroke-width', '1'); mark.setAttribute('vector-effect', 'non-scaling-stroke'); preview.append(mark);
+      });
+    } else { preview = document.createElement('img'); preview.src = source; preview.alt = '圈选的区域 ' + (index + 1); }
+    const caption = document.createElement('figcaption'); caption.textContent = '区域 ' + (index + 1) + (translated && original?.lines?.length ? '（蓝框为识别范围）' : '');
+    figure.append(preview, caption); thumbs.append(figure);
+  });
+  thumbs.classList.toggle('hidden', pendingImages.length === 0);
+  const editors = $('source-editors'); editors.replaceChildren(); editors.classList.toggle('hidden', !translated);
+  if (translated && sourcesPending) { const hint = document.createElement('p'); hint.className = 'hint'; hint.textContent = '正在本机识别原文，尚未发送到云端…'; editors.append(hint); }
+  if (translated && !sourcesPending) pendingSources.forEach(source => {
+    const section = document.createElement('div'); section.className = 'source-editor';
+    const label = document.createElement('label'); label.textContent = '区域 ' + (source.id + 1) + ' 原文（可校正）'; label.htmlFor = 'source-' + source.id;
+    const input = document.createElement('textarea'); input.id = 'source-' + source.id; input.value = source.text;
+    input.placeholder = '取消勾选下方图片翻译后，可在这里填写原文。'; input.dataset.imageMode = String(source.mode === 'image'); input.spellcheck = false;
+    input.addEventListener('input', () => { source.text = input.value; });
+    const modeLabel = document.createElement('label'); modeLabel.className = 'source-mode';
+    const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.checked = source.mode === 'image';
+    const modeText = document.createElement('span'); modeText.textContent = '使用本区图片翻译（取消勾选可编辑原文；图片会发送）';
+    toggle.addEventListener('change', () => { source.mode = toggle.checked ? 'image' : 'text'; input.dataset.imageMode = String(toggle.checked); updateControls(); });
+    modeLabel.append(toggle, modeText); section.append(label, input, modeLabel);
+    if (source.error || source.confidence < 0.8) { const warning = document.createElement('div'); warning.className = 'source-warning'; warning.textContent = source.error || '这段原文识别把握较低，请对照图片校正后再发送。'; section.append(warning); }
+    editors.append(section);
+  });
+  $('selection-hint').textContent = translated ? '本机识别不上传。确认后发送各区原文；勾选图片翻译的区域才发送图片。补充要求最多 300 字，原文另计每区最多 12000 字。' :
+    pendingImages.length ? '请检查以上 ' + pendingImages.length + ' 张图片；确认后才会发送，最多 5 张。' : '只有点击发送后，问题才会送往 DeepSeek。';
+  updateCount(); updateControls();
+}
+function resetLocal(reason){
+  viewEpoch++;
+  currentRequestId = null; requestBusy = false; canPlace = false;
+  cancelAudio(); cancelRender();
+  task = 'ask'; resultTask = 'ask'; selectionId = null; pendingImages = [];
+  pendingSources = []; sourcesPending = false;
+  raw = ''; translations = []; q.value = ''; $('direction').value = 'auto';
+  textEl.replaceChildren(); translationsEl.replaceChildren();
+  answerBox.classList.add('hidden'); confirmBox.classList.remove('hidden');
+  clearTimeout(toastTimer); $('toast').classList.add('hidden');
+  setErr(''); setStatus(reason || '待机'); renderEditor();
+}
+function toast(message, bad = false){
+  clearTimeout(toastTimer);
+  $('toast').textContent = message; $('toast').classList.toggle('bad', bad); $('toast').classList.remove('hidden');
+  toastTimer = setTimeout(() => $('toast').classList.add('hidden'), bad ? 4500 : 2200);
+}
+async function copyText(value){
+  if (typeof value !== 'string' || !value) { toast('没有可复制的内容', true); return; }
+  const copiedView = viewEpoch;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
-  } catch (e) { setErr('麦克风不可用：' + e.message); setStatus('待机'); return; }
-  chunks = [];
-  mr = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-  mr.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
-  mr.onstop = async () => {
-    try {
-      stream.getTracks().forEach(t => t.stop());
-      setStatus('识别中…');
-      const blob = new Blob(chunks, { type: 'audio/webm' });
-      if (blob.size < 1000) { setErr('录音太短'); setStatus('待机'); return; }
-      const wav = await toWav(blob);
-      const pcm = new Int16Array(wav, 44);
-      let sum = 0, peak = 0;
-      for (let i = 0; i < pcm.length; i++) { const v = pcm[i]; sum += v * v; const a = Math.abs(v); if (a > peak) peak = a; }
-      const rms = Math.sqrt(sum / Math.max(1, pcm.length));
-      const dur = pcm.length / 16000;
-      if (dur < 0.5 || rms < 200 || peak < 600) { setErr('没听清（音量太低或太短）'); setStatus('待机'); return; }
-      const res = await window.m1.asr(b64(wav));
-      if (!res.ok) { setErr(res.error || '识别失败'); setStatus('待机'); return; }
-      if (!res.text) { setErr('没听清，请重说'); setStatus('待机'); return; }
-      if (mode === 'lasso' && !confirmBox.classList.contains('hidden')) {
-        q.value = (q.value + ' ' + res.text).trim();
-        q.focus(); setStatus('已补充识别文本');
-      } else {
-        setStatus('请确认识别文本');
-        showConfirm(res.text);
-      }
-      await window.m1.focusPanel();
-    } catch (e) { setErr('识别异常：' + e.message); setStatus('待机'); }
-  };
-  mr.start();
-  recording = true; micBtn.classList.add('rec');
+    const result = await window.m1.copyText(value);
+    if (copiedView !== viewEpoch) return;
+    if (!result || !result.ok) { toast('复制失败：' + (result && result.error || '请重试'), true); return; }
+    toast('已复制到剪切板');
+  } catch (error) { if (copiedView === viewEpoch) toast('复制失败：' + messageOf(error, '请重试'), true); }
 }
-function stopRec(){
-  if (!recording) return;
-  recording = false; micBtn.classList.remove('rec');
-  try { mr.stop(); } catch (e) {}
+async function placeResult(index){
+  const placedView = viewEpoch;
+  try {
+    const payload = Number.isInteger(index) ? { action: 'place', index } : { action: 'place' };
+    const result = await window.m1.overlayAction(payload);
+    if (placedView !== viewEpoch) return;
+    if (!result || !result.ok) setErr(result && result.error || '无法选择放置区域');
+    else setStatus(Number.isInteger(index) ? '请为区域 ' + (index + 1) + ' 的译文选择放置位置' : '请在画面上选择放置区域');
+  } catch (error) { if (placedView === viewEpoch) setErr(messageOf(error, '无法选择放置区域')); }
+}
+async function toWav(blob, session){
+  const Context = window.AudioContext || window.webkitAudioContext;
+  const context = new Context(); audioContexts.add(context);
+  try {
+    const audio = await context.decodeAudioData(await blob.arrayBuffer());
+    if (!isCurrentAudio(session)) return null;
+    const target = 16000, seconds = Math.min(30, audio.duration);
+    const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(seconds * target)), target);
+    const source = offline.createBufferSource(); source.buffer = audio; source.connect(offline.destination); source.start();
+    const rendered = await offline.startRendering();
+    if (!isCurrentAudio(session)) return null;
+    const samples = rendered.getChannelData(0), length = samples.length;
+    const buffer = new ArrayBuffer(44 + length * 2), view = new DataView(buffer);
+    const word = (offset, value) => { for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); };
+    word(0, 'RIFF'); view.setUint32(4, 36 + length * 2, true); word(8, 'WAVE'); word(12, 'fmt ');
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, target, true); view.setUint32(28, target * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    word(36, 'data'); view.setUint32(40, length * 2, true);
+    for (let i = 0; i < length; i++) { const sample = Math.max(-1, Math.min(1, samples[i])); view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true); }
+    return buffer;
+  } finally { closeAudioContext(context); }
+}
+function b64(buffer){
+  const bytes = new Uint8Array(buffer); let value = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) value += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(value);
+}
+async function finishRecording(session){
+  clearTimeout(session.timer); stopTracks(session.stream);
+  if (!isCurrentAudio(session)) return;
+  micState = 'processing'; setStatus('识别中…'); updateControls();
+  try {
+    const blob = new Blob(session.chunks, { type: session.recorder.mimeType || 'audio/webm' });
+    session.chunks.length = 0;
+    if (blob.size < 1000) throw new Error('录音太短，请重新录音');
+    const wav = await toWav(blob, session);
+    if (!wav || !isCurrentAudio(session)) return;
+    const pcm = new Int16Array(wav, 44); let sum = 0, peak = 0;
+    for (const sample of pcm) { sum += sample * sample; peak = Math.max(peak, Math.abs(sample)); }
+    if (pcm.length / 16000 < 0.5 || Math.sqrt(sum / Math.max(1, pcm.length)) < 200 || peak < 600) throw new Error('没听清，音量太低或录音太短');
+    const result = await window.m1.asr(b64(wav));
+    if (!isCurrentAudio(session)) return;
+    if (!result || !result.ok || !result.text) throw new Error(result && result.error || '没听清，请重说');
+    q.value = session.replace ? result.text : (q.value + ' ' + result.text).trim();
+    confirmBox.classList.remove('hidden'); answerBox.classList.add('hidden');
+    const characters = updateCount();
+    if (characters > MAX_QUESTION_CHARS) { setErr(QUESTION_LIMIT_ERROR); setStatus('识别文字已完整保留，请删减到 300 字以内'); }
+    else setStatus('请检查识别文字，确认后发送');
+    q.focus(); q.setSelectionRange(q.value.length, q.value.length);
+    try { await window.m1.focusPanel(); } catch (_) {}
+  } catch (error) {
+    if (isCurrentAudio(session)) { setErr(messageOf(error, '识别失败，请重试')); setStatus('录音未完成'); }
+  } finally {
+    stopTracks(session.stream); session.chunks.length = 0;
+    if (isCurrentAudio(session)) { recSession = null; micState = 'idle'; updateControls(); }
+  }
+}
+async function startRecording(source = 'button', replace = false){
+  if (micState !== 'idle') return;
+  if (requestBusy) { setErr('请先停止当前请求，再开始录音'); return; }
+  const session = { epoch: ++audioEpoch, source, replace, stream: null, recorder: null, chunks: [], timer: null, discard: false, stopping: false };
+  recSession = session; micState = 'starting'; setErr(''); setStatus('正在打开麦克风…'); updateControls();
+  try {
+    const acquired = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    if (!isCurrentAudio(session)) { stopTracks(acquired); return; }
+    session.stream = acquired;
+    const preferred = 'audio/webm;codecs=opus';
+    session.recorder = MediaRecorder.isTypeSupported(preferred) ? new MediaRecorder(acquired, { mimeType: preferred }) : new MediaRecorder(acquired);
+    session.recorder.ondataavailable = event => { if (isCurrentAudio(session) && event.data.size) session.chunks.push(event.data); };
+    session.recorder.onstop = () => finishRecording(session);
+    session.recorder.onerror = () => { if (isCurrentAudio(session)) { cancelAudio(); setErr('录音设备异常，请重试'); setStatus('录音已停止'); } };
+    session.recorder.start(); micState = 'recording';
+    session.timer = setTimeout(() => { if (isCurrentAudio(session)) { stopRecording(); toast('已到 30 秒，录音自动停止'); } }, 30000);
+    setStatus(source === 'shortcut' ? '录音中…松开快捷键停止' : '录音中…再次点击停止'); updateControls();
+  } catch (error) {
+    stopTracks(session.stream);
+    if (isCurrentAudio(session)) { cancelAudio(); setErr('麦克风不可用：' + messageOf(error, '请检查设备')); setStatus('待机'); }
+  }
+}
+function stopRecording(){
+  const session = recSession;
+  if (!session) return;
+  if (micState === 'starting') { cancelAudio(); setStatus('录音已取消'); return; }
+  if (micState !== 'recording' || session.stopping) return;
+  session.stopping = true; clearTimeout(session.timer); micState = 'processing'; updateControls();
+  try { session.recorder.stop(); stopTracks(session.stream); }
+  catch (error) { cancelAudio(); setErr('停止录音失败：' + messageOf(error, '请重试')); setStatus('录音已取消'); }
+}
+function toggleRecording(replace = false){
+  if (micState === 'starting' || micState === 'recording') stopRecording();
+  else if (micState === 'idle') startRecording('button', replace);
+}
+function requestFailed(id, error){
+  if (currentRequestId !== id) return;
+  currentRequestId = null; requestBusy = false; canPlace = false; cancelRender();
+  if (raw) renderAnswer();
+  setErr(error || '请求失败，请重试'); setStatus('请求未完成');
+  confirmBox.classList.remove('hidden'); renderEditor(); updateControls();
+}
+async function send(){
+  if (requestBusy || micState !== 'idle') return;
+  if (task === 'translate' && sourcesPending) { setErr('请等待本机识别结束，再确认原文'); return; }
+  if (task === 'translate' && (pendingSources.length !== pendingImages.length || pendingSources.some(source =>
+      (source.mode === 'text' && !source.text.trim()) || Array.from(source.text).length > 12000))) {
+    setErr('请确认每区原文：文字翻译不能为空，每区最多 12000 字；无法识别时可选择图片翻译。'); return;
+  }
+  if (updateCount() > MAX_QUESTION_CHARS) { setErr(QUESTION_LIMIT_ERROR); q.focus(); return; }
+  const text = q.value.trim();
+  if (task === 'translate' && pendingImages.length === 0) { setErr('请先从浮球菜单选择翻译并圈选文字'); return; }
+  if (!text && pendingImages.length === 0) { setErr('请先输入问题、录音，或圈选画面'); q.focus(); return; }
+  const id = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : Date.now() + '-' + (++requestSequence);
+  viewEpoch++;
+  currentRequestId = id; requestBusy = true; resultTask = task; raw = ''; translations = []; canPlace = false; cancelRender();
+  setErr(''); setStatus(task === 'translate' ? '正在翻译…' : '思考中…');
+  confirmBox.classList.add('hidden'); showResult();
+  try {
+    const result = await window.m1.ask({ requestId: id, text, imageDataUrls: pendingImages.slice(), task, direction: $('direction').value, selectionId,
+      sourceEdits: task === 'translate' ? pendingSources.map(source => ({ id: source.id, text: source.text, mode: source.mode })) : undefined });
+    if (currentRequestId !== id || !requestBusy) return;
+    if (!result || !result.ok) {
+      if (result && result.aborted) { currentRequestId = null; requestBusy = false; setStatus('已停止'); updateControls(); }
+      else requestFailed(id, result && result.error || '请求未能完成，请重试');
+    }
+  } catch (error) { requestFailed(id, messageOf(error, '请求异常，请重试')); }
+}
+async function stopRequest(){
+  const wasBusy = requestBusy;
+  currentRequestId = null; requestBusy = false; cancelAudio(); cancelRender();
+  if (raw) renderAnswer();
+  if (wasBusy) setStatus('已停止');
+  updateControls();
+  try { const result = await window.m1.abort(); if (result && result.ok === false) setErr(result.error || '停止请求失败'); }
+  catch (error) { setErr(messageOf(error, '停止请求失败')); }
+}
+async function clearAll(hide = false){
+  resetLocal('已清除本次内容');
+  try { const result = await window.m1.clear(); if (result && result.ok === false) setErr(result.error || '清除未完成'); }
+  catch (error) { setErr(messageOf(error, '清除未完成')); }
+  if (hide) {
+    try { await window.m1.hidePanel(); await window.m1.focusShow(); } catch (_) {}
+  }
+}
+function clearMessage(data){
+  const reason = data && typeof data.reason === 'string' ? data.reason : '';
+  if (/[\u4e00-\u9fff]/.test(reason)) return reason;
+  if (/slide|page/.test(reason)) return '已翻页，旧回答和翻译已清除';
+  if (/end|exit|leave/.test(reason)) return '已退出放映，旧回答和翻译已清除';
+  return reason ? '画面已变化，旧内容已清除' : '已清除本次内容';
 }
 
-micBtn.addEventListener('pointerdown', e => { e.preventDefault(); startRec(); });
-micBtn.addEventListener('pointerup', e => { e.preventDefault(); stopRec(); });
-micBtn.addEventListener('pointerleave', () => stopRec());
-
-function send(){
-  const t = q.value.trim();
-  if (!t && pendingImages.length === 0) { setErr('问题为空'); return; }
-  setErr(''); hideConfirm(); const imgs = pendingImages.slice(); resetAnswer(); setStatus('思考中…');
-  window.m1.ask({ text: t, imageDataUrls: imgs });
-}
+micBtn.onclick = () => toggleRecording(false);
+$('again').onclick = () => toggleRecording(true);
 $('send').onclick = send;
-$('gear').onclick = () => window.m1.openSettings();
-$('skip').onclick = () => { setErr(''); hideConfirm(); const imgs = pendingImages.slice(); resetAnswer(); setStatus('思考中…'); window.m1.ask({ text: '', imageDataUrls: imgs }); };
-$('again').onclick = () => { hideConfirm(); startRec(); };
-$('cancel').onclick = () => { hideConfirm(); mode='voice'; pendingImages=[]; thumbsEl.innerHTML=''; thumbsEl.classList.add('hidden'); skipBtn.classList.add('hidden'); setStatus('待机'); window.m1.focusShow(); };
-$('stop').onclick = () => { window.m1.abort(); setStatus('已停止'); };
-$('copy').onclick = () => navigator.clipboard.writeText(raw);
-$('close').onclick = () => { answerBox.classList.add('hidden'); micBtn.classList.remove('hidden'); setStatus('待机'); window.m1.hidePanel(); window.m1.focusShow(); };
-q.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { hideConfirm(); answerBox.classList.add('hidden'); micBtn.classList.remove('hidden'); setStatus('待机'); window.m1.focusShow(); } });
+$('gear').onclick = async () => { try { await window.m1.openSettings(); } catch (error) { setErr(messageOf(error, '无法打开设置')); } };
+$('clear').onclick = () => clearAll(false);
+$('cancel').onclick = () => clearAll(true);
+$('stop').onclick = stopRequest;
+$('hide').onclick = async () => { await stopRequest(); try { await window.m1.hidePanel(); await window.m1.focusShow(); } catch (error) { setErr(messageOf(error, '无法收起')); } };
+$('copy').onclick = () => copyText(resultTask === 'translate' ? translations.filter(item => item.text && !item.error).map(item => item.text).join('\n\n') : raw);
+$('edit').onclick = () => { confirmBox.classList.remove('hidden'); renderEditor(); q.focus(); };
+$('place').onclick = () => placeResult();
+q.addEventListener('input', updateCount);
+q.addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); } });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); clearAll(true); } });
 
-window.m1.onRec(v => { v ? startRec() : stopRec(); });
-window.m1.onDelta(d => { setStatus('回答中…'); pushDelta(d.text); });
-window.m1.onDone(d => { doneFlag = true; setStatus(d && d.aborted ? '已停止' : '完成'); tick(); });
-window.m1.onError(msg => { setErr(msg); setStatus('出错'); active = false; });
-window.m1.onState(s => { if (!s.showing) setStatus('未检测到放映'); });
-window.m1.onLasso(d => {
-  mode = 'lasso'; pendingImages = (d.imageDataUrls || []).slice(0, 5);
-  setErr(''); setStatus('已圈选 ' + pendingImages.length + ' 个区域，补充问题或直接发送');
-  thumbsEl.innerHTML = '';
-  pendingImages.forEach(src => { const im = document.createElement('img'); im.src = src; thumbsEl.appendChild(im); });
-  thumbsEl.classList.remove('hidden');
-  confirmBox.classList.remove('hidden'); answerBox.classList.add('hidden'); micBtn.classList.remove('hidden');
-  skipBtn.classList.remove('hidden');
-  q.value = ''; q.placeholder = '可补充一句话；留空则直接问“讲解圈出内容”'; q.focus();
-  if (d.areaRatio > 0.6) setErr('圈选范围较大，可能包含无关内容');
+window.m1.onRec(value => {
+  if (value) startRecording('shortcut', false);
+  else if (recSession && recSession.source === 'shortcut') stopRecording();
 });
+window.m1.onVoice(() => {
+  const hadRequest = requestBusy;
+  resetLocal('点击“开始录音”，录完后确认文字再发送');
+  if (hadRequest) window.m1.abort().catch(error => setErr(messageOf(error, '停止旧请求失败')));
+  q.focus();
+});
+window.m1.onDelta(data => {
+  if (!data || data.requestId !== currentRequestId || !requestBusy || resultTask === 'translate' || typeof data.text !== 'string') return;
+  raw += data.text; setStatus('回答中…'); scheduleAnswer(); updateControls();
+});
+window.m1.onDone(data => {
+  if (!data || data.requestId !== currentRequestId || !requestBusy) return;
+  requestBusy = false; canPlace = !!data.canPlace; cancelRender();
+  if (typeof data.text === 'string') raw = data.text;
+  if (resultTask === 'translate') translations = normalizeTranslations(data.translations);
+  if (typeof data.notice === 'string') setErr(data.notice);
+  showResult();
+  if (data.aborted) setStatus('已停止');
+  else if (resultTask === 'translate' && !translations.some(item => item.text && !item.error)) { setStatus('未获得译文'); setErr('本次没有可用译文，请返回编辑后重试'); }
+  else { setStatus(data.placement === 'overlay' ? '完成，结果已显示在画面上' : data.placement === 'partial' ? '完成，部分已显示，其余在回答框' : '完成，请在回答框阅读'); }
+});
+window.m1.onError(data => { if (data && data.requestId === currentRequestId) requestFailed(data.requestId, data.error || '请求失败，请重试'); });
+window.m1.onStopAudio(() => {
+  const hadAudio = micState !== 'idle';
+  cancelAudio();
+  if (hadAudio && !requestBusy) setStatus('录音已取消');
+});
+window.m1.onNotice(data => {
+  if (!data) return;
+  const message = typeof data.error === 'string' ? data.error : typeof data.notice === 'string' ? data.notice : typeof data.text === 'string' ? data.text : '';
+  if (message) setErr(message);
+});
+window.m1.onState(data => {
+  const scene = $('scene'), inShow = !!data?.showing, reliable = data?.tracking === 'slide';
+  scene.textContent = inShow ? (reliable ? '放映 · 页码跟随' : '放映 · 操作保护') : '普通窗口';
+  scene.title = inShow ? (reliable ? '按实际放映页清除旧内容；请手工核验动画与翻页。' :
+    '未取得可靠页码，仍可显示透明文本框；放映导航操作会清除，同页动画也可能清除。') : '';
+});
+window.m1.onLasso(data => {
+  const hadRequest = requestBusy;
+  resetLocal();
+  if (hadRequest) window.m1.abort().catch(error => setErr(messageOf(error, '停止旧请求失败')));
+  task = data && data.mode === 'translate' ? 'translate' : 'ask';
+  selectionId = data && data.selectionId != null ? data.selectionId : null;
+  pendingImages = (data && Array.isArray(data.imageDataUrls) ? data.imageDataUrls : []).filter(value => typeof value === 'string' && /^data:image\/png;base64,/.test(value)).slice(0, 5);
+  sourcesPending = task === 'translate' && !!data?.sourcePending;
+  renderEditor();
+  if (pendingImages.length === 0) setErr('没有收到有效圈选图片，请重新圈选');
+  else { setStatus(task === 'translate' ? '正在本机识别原文…' : '请确认图片，可补充问题后发送'); if (data.areaRatio > 0.6) setErr('圈选范围较大，请确认图片中没有不希望发送的内容'); }
+  q.focus();
+});
+window.m1.onSources(data => {
+  if (!data || task !== 'translate' || String(data.selectionId) !== String(selectionId)) return;
+  pendingSources = Array.isArray(data.regions) ? data.regions.map(source => ({ ...source, text: String(source.text || ''), mode: source.mode === 'image' ? 'image' : 'text' })) : [];
+  sourcesPending = false; renderEditor(); setStatus('请核对原文与翻译方向，确认后发送');
+});
+window.m1.onClear(data => resetLocal(clearMessage(data)));
+window.m1.onResult(data => {
+  viewEpoch++;
+  currentRequestId = null; requestBusy = false; canPlace = !!(data && data.canPlace); cancelAudio(); cancelRender();
+  resultTask = data && data.task === 'translate' ? 'translate' : 'ask';
+  raw = data && typeof data.text === 'string' ? data.text : '';
+  translations = normalizeTranslations(data && data.translations);
+  confirmBox.classList.add('hidden'); setErr(data && typeof data.notice === 'string' ? data.notice : ''); showResult(); setStatus('完整结果');
+});
+window.addEventListener('pagehide', () => { currentRequestId = null; cancelAudio(); cancelRender(); clearTimeout(toastTimer); });
+window.addEventListener('beforeunload', () => { currentRequestId = null; cancelAudio(); cancelRender(); });
+renderEditor();
 </script>
-</body></html>
+</body>
+</html>

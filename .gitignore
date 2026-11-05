@@ -20,6 +20,7 @@ coverage/
 # ASR binaries and models (prepared separately)
 vendor/
 app/asr/
+app/ocr-runtime/
 *.bin
 
 # Captures and local evidence

@@ -9,6 +9,10 @@ Third-party components retain their own licenses and copyrights:
 - opencc-js 1.4.2: MIT; conversion data has additional licenses in LICENSES.
 - whisper.cpp b5454 (d1be6fde11ac6e0407606b4e42fe72d34add8037): MIT.
 - OpenAI Whisper small model: MIT, upstream model distribution via ggerganov/whisper.cpp.
+- RapidOCR 3.9.2 and PP-OCRv4 models: Apache-2.0; see third_party/OCR-NOTICE.md.
+- ONNX Runtime 1.23.2 CPU: MIT; embedded CPython 3.12.10: PSF and bundled notices.
+- OCR supporting distributions retain their own licenses, copied with their
+  installed metadata into resources/ocr-runtime/licenses/ during preparation.
 
 See third_party/licenses/ in the source repository and third-party-licenses/
 in the installed application for verbatim notices. Electron's distribution

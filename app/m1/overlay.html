@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'none'; connect-src 'none'; font-src 'self' data:">
+<link rel="stylesheet" href="../node_modules/katex/dist/katex.min.css">
+<script src="../node_modules/katex/dist/katex.min.js"></script>
+<script src="text-render.js"></script>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent!important;font-family:"Microsoft YaHei",sans-serif;pointer-events:none}
+#cards{position:fixed;inset:0;pointer-events:none}
+#dismiss-layer{display:none;position:fixed;inset:0;z-index:0;pointer-events:auto;touch-action:none;background:rgba(0,0,0,.004)}
+#cards{z-index:1}
+.text-box{position:absolute;background:transparent!important;border:0;box-shadow:none;color:#101827;pointer-events:auto;touch-action:none;outline:none;cursor:move}
+.text-box.dark{color:#fff}.text{position:absolute;inset:0;padding:4px;background:transparent!important;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.3;user-select:none}
+.outline{position:absolute;inset:0;border:1px solid #3486ed;pointer-events:none;visibility:hidden}.text-box.active .outline{visibility:visible}
+.text-box.active.has-overflow .outline{border-style:dashed}
+.resize-handle{position:absolute;width:44px;height:44px;touch-action:none;pointer-events:none;visibility:hidden;z-index:2}
+.text-box.active .resize-handle{pointer-events:auto;visibility:visible}
+.resize-handle::after{content:"";position:absolute;left:18px;top:18px;width:8px;height:8px;background:white;border:1px solid #2574d8;border-radius:1px}
+.resize-handle[data-corner="nw"]{left:-22px;top:-22px;cursor:nwse-resize}.resize-handle[data-corner="ne"]{right:-22px;top:-22px;cursor:nesw-resize}
+.resize-handle[data-corner="sw"]{left:-22px;bottom:-22px;cursor:nesw-resize}.resize-handle[data-corner="se"]{right:-22px;bottom:-22px;cursor:nwse-resize}
+.katex-display{overflow:visible;margin:.15em 0}.katex{font-size:1.05em}
+#font-tools{position:fixed;display:none;flex-wrap:wrap;gap:4px;min-height:44px;width:508px;align-items:center;background:transparent;pointer-events:auto;z-index:50;touch-action:none}
+#font-tools button,#font-tools input{font:14px "Microsoft YaHei",sans-serif;height:44px;margin:0;border:1px solid #a6b7cc;border-radius:4px;background:rgba(255,255,255,.94);color:#172033;text-align:center;pointer-events:auto;touch-action:manipulation}
+#font-tools button{width:44px;min-width:44px;flex:0 0 44px;padding:0;cursor:pointer}#font-tools input{width:52px;min-width:44px;flex:0 0 52px;padding:0 2px;appearance:textfield}
+#font-tools .color-choice::before{content:"";display:inline-block;width:11px;height:11px;margin-right:2px;border:1px solid #8393a8;vertical-align:0;background:var(--choice)}
+#font-tools .color-choice[aria-pressed="true"]{border:2px solid #2563eb}
+#font-tools #return-panel{width:112px;min-width:44px;max-width:100%;flex:0 1 112px;padding:0 5px;white-space:normal}
+#font-tools #finish-edit{width:96px;min-width:44px;flex:0 1 96px;padding:0 5px;white-space:normal}
+#edit-hint{flex:1 0 100%;padding:2px 5px;background:rgba(255,255,255,.94);border-radius:4px;color:#172033;font:12px/1.5 "Microsoft YaHei",sans-serif;pointer-events:none}
+#font-tools input::-webkit-inner-spin-button,#font-tools input::-webkit-outer-spin-button{appearance:none;margin:0}
+#font-tools button:focus-visible,#font-tools input:focus-visible{outline:2px solid #3486ed;outline-offset:-2px}
+</style></head><body>
+<div id="dismiss-layer" aria-hidden="true"></div>
+<div id="cards" aria-label="课堂透明文本框"></div>
+<div id="font-tools" aria-label="文本框编辑控制">
+  <button id="smaller" type="button" aria-label="缩小字号" title="缩小字号，最小8">A−</button>
+  <input id="font-size" type="number" min="8" max="128" step="1" aria-label="字号，8至128" title="字号，8至128">
+  <button id="larger" type="button" aria-label="放大字号" title="放大字号，最大128">A+</button>
+  <button class="color-choice" type="button" data-color="#000000" style="--choice:#000000" aria-label="黑色文字" aria-pressed="false" title="黑色文字">黑</button>
+  <button class="color-choice" type="button" data-color="#FFFFFF" style="--choice:#FFFFFF" aria-label="白色文字" aria-pressed="false" title="白色文字">白</button>
+  <button class="color-choice" type="button" data-color="#2563EB" style="--choice:#2563EB" aria-label="蓝色文字" aria-pressed="false" title="蓝色文字">蓝</button>
+  <button id="return-panel" type="button" title="保留当前结果和文本框调整，返回回答框">返回回答框</button>
+  <button id="finish-edit" type="button" title="收起边框和工具条，保留文字">完成调整</button>
+  <div id="edit-hint">完成调整后保留文字；按 Esc 也可收起。</div>
+</div>
+<script>
+// onOverlay({task,cards,screenBounds,requestId,revision?}); cards retain id/sourceIndex.
+// regions.rects are native hit areas (text + currently visible editing controls).
+// regions.cards are authoritative text geometry/font state for main to retain:
+// [{id,sourceIndex,rect:{x,y,width,height},fontSize,tone,color}]. All rects are global DIP.
+// Controls never change the text rectangle, and require no reserved toolbar height.
+const container=document.getElementById('cards'),tools=document.getElementById('font-tools');
+const dismissLayer=document.getElementById('dismiss-layer'),editHint=document.getElementById('edit-hint');
+const sizeInput=document.getElementById('font-size');
+const colorButtons=Array.from(tools.querySelectorAll('.color-choice'));
+const COLORS=new Set(['#000000','#FFFFFF','#2563EB']);
+const validColor=value=>typeof value==='string' && COLORS.has(value.toUpperCase())?value.toUpperCase():null;
+const finite=value=>typeof value==='number' && Number.isFinite(value);
+const clamp=(value,low,high)=>Math.max(low,Math.min(high,value));
+const sameRect=(a,b)=>!!a && !!b && ['x','y','width','height'].every(key=>a[key]===b[key]);
+let screenBounds={x:0,y:0,width:innerWidth,height:innerHeight},task='ask',requestId=null,revision=null;
+let current=new Map(),selectedId=null,hoverId=null,toolsId=null,toolsFocusId=null,toolPress=null,gesture=null,regionFrame=null,hoverTimer=null;
+let overflowFrame=null,overflowIds=new Set();
+let slideshow=false,editorWanted=false,editorArmed=false,editSerial=0,dismissGesture=null;
+let finishAfterPointer=false,finishRestoreFocus=false,escapeHeld=false;
+const isCurrent=card=>current.get(card.id)===card && card.element.isConnected;
+function action(payload){
+  const generation=requestId,version=revision;
+  if(generation===null)return Promise.resolve({ok:false});
+  try{return Promise.resolve(window.m1.overlayAction({...payload,requestId:generation,revision:version})).catch(()=>({ok:false}));}catch(_){return Promise.resolve({ok:false});}
+}
+function pointer(interactive){
+  try{Promise.resolve(window.m1.overlayPointer({interactive,requestId,revision})).catch(()=>{});}catch(_){}
+}
+function clippedRect(rect){
+  const x=Math.max(screenBounds.x,rect.x),y=Math.max(screenBounds.y,rect.y);
+  const right=Math.min(screenBounds.x+screenBounds.width,rect.x+rect.width);
+  const bottom=Math.min(screenBounds.y+screenBounds.height,rect.y+rect.height);
+  return right>x && bottom>y?{x,y,width:right-x,height:bottom-y}:null;
+}
+function globalDOMRect(element){
+  const rect=element.getBoundingClientRect();
+  return clippedRect({x:screenBounds.x+rect.left,y:screenBounds.y+rect.top,width:rect.width,height:rect.height});
+}
+function flushRegions(){
+  if(requestId===null)return Promise.resolve({ok:false});
+  const cards=Array.from(current.values()).map(card=>({
+    id:card.id,sourceIndex:card.sourceIndex,rect:{...card.rect},fontSize:card.fontSize,tone:card.tone,color:card.color
+  }));
+  const rects=cards.map(card=>({...card.rect}));
+  const active=current.get(toolsId);
+  if(active && active.element.classList.contains('active')){
+    active.element.querySelectorAll('.resize-handle').forEach(handle=>{const rect=globalDOMRect(handle);if(rect)rects.push(rect);});
+  }
+  if(tools.style.display!=='none'){
+    const rect=globalDOMRect(tools);if(rect)rects.push(rect);
+  }
+  return action({action:'regions',rects,cards,interactive:!!gesture,
+    captureBackground:slideshow && (editorWanted || !!dismissGesture)});
+}
+function reportRegions(immediate=false){
+  if(requestId===null)return;
+  if(immediate){if(regionFrame!==null){cancelAnimationFrame(regionFrame);regionFrame=null;}return flushRegions();}
+  if(regionFrame!==null)return;
+  regionFrame=requestAnimationFrame(()=>{regionFrame=null;flushRegions();});
+}
+function queueOverflow(card){
+  card.reportingOverflow=true;card.element.style.visibility='hidden';overflowIds.add(card.id);
+  if(overflowFrame!==null)return;
+  const generation=requestId;
+  overflowFrame=requestAnimationFrame(async()=>{
+    overflowFrame=null;
+    const ids=Array.from(overflowIds).filter(id=>current.has(id));overflowIds.clear();
+    if(requestId!==generation || !ids.length)return;
+    const saved=await reportRegions(true);
+    if(requestId===generation && saved?.ok!==false)await action({action:'overflow',ids});
+  });
+}
+function checkOverflow(card){
+  if(!isCurrent(card))return;
+  const text=card.element.querySelector('.text');
+  const overflowing=text.scrollHeight>text.clientHeight+1 || text.scrollWidth>text.clientWidth+1;
+  card.element.classList.toggle('has-overflow',overflowing);
+  card.element.title=(card.warning?card.warning+'；':'')+'拖动移动，四角拉伸，选中后调整字号、颜色或返回回答框';
+  if(overflowing && gesture?.card!==card && !card.reportingOverflow){
+    queueOverflow(card);
+  }
+}
+function scheduleOverflow(card){
+  Promise.resolve(document.fonts?.ready).then(()=>{
+    if(isCurrent(card))requestAnimationFrame(()=>checkOverflow(card));
+  });
+}
+function updateBox(card,report=true){
+  if(!isCurrent(card))return;
+  // Keep an incoming manual region exact; only constrain it to this screen.
+  card.rect.width=clamp(card.rect.width,1,screenBounds.width);
+  card.rect.height=clamp(card.rect.height,1,screenBounds.height);
+  card.rect.x=clamp(card.rect.x,screenBounds.x,screenBounds.x+screenBounds.width-card.rect.width);
+  card.rect.y=clamp(card.rect.y,screenBounds.y,screenBounds.y+screenBounds.height-card.rect.height);
+  const style=card.element.style;
+  style.left=(card.rect.x-screenBounds.x)+'px';style.top=(card.rect.y-screenBounds.y)+'px';
+  style.width=card.rect.width+'px';style.height=card.rect.height+'px';
+  style.color=card.color;
+  card.element.querySelector('.text').style.fontSize=card.fontSize+'px';
+  scheduleOverflow(card);
+  if(report){updateChrome();reportRegions();}
+}
+function clearHoverTimer(){clearTimeout(hoverTimer);hoverTimer=null;}
+function updateDismissLayer(){
+  dismissLayer.style.display=slideshow && (editorWanted || dismissGesture)?'block':'none';
+}
+async function beginEditing(card){
+  if(!isCurrent(card))return;
+  const generation=requestId,serial=++editSerial;
+  editorWanted=true;editorArmed=!slideshow;finishAfterPointer=false;finishRestoreFocus=false;
+  selectedId=card.id;updateDismissLayer();updateChrome();
+  // Only reveal slideshow editing controls after native full-screen hit testing
+  // has acknowledged protection. A DOM-only backdrop cannot stop slide clicks.
+  const saved=await reportRegions(true);
+  if(requestId!==generation || editSerial!==serial || !editorWanted)return;
+  if(saved?.ok===false || (slideshow && saved?.backgroundCaptured!==true)){
+    editorWanted=false;editorArmed=false;selectedId=null;updateDismissLayer();updateChrome();
+    await action({action:'panel'});return;
+  }
+  editorArmed=true;updateChrome();
+}
+async function restoreSlideshowFocus(generation){
+  if(!slideshow || requestId!==generation || editorWanted || escapeHeld)return;
+  try{await window.m1.focusShow();}catch(_){}
+}
+async function finishEditing({restoreFocus=true}={}){
+  if(gesture || dismissGesture){
+    finishAfterPointer=true;finishRestoreFocus=finishRestoreFocus || restoreFocus;
+    editorArmed=false;updateChrome();return;
+  }
+  const generation=requestId;
+  if(document.activeElement===sizeInput && sizeInput.value.trim())setFont(Number(sizeInput.value),controlCard(sizeInput));
+  ++editSerial;editorWanted=false;editorArmed=false;finishAfterPointer=false;finishRestoreFocus=false;
+  selectedId=null;hoverId=null;toolsFocusId=null;toolPress=null;clearHoverTimer();
+  if(document.activeElement instanceof HTMLElement)document.activeElement.blur();
+  updateDismissLayer();updateChrome();
+  const saved=await reportRegions(true);
+  if(saved?.ok!==false && requestId===generation && !editorWanted && restoreFocus)await restoreSlideshowFocus(generation);
+}
+function updateChrome(){
+  // Keep both keyboard focus and an in-progress pointer press bound to one box.
+  const editingId=document.hasFocus() && tools.contains(document.activeElement) && current.has(toolsFocusId)?toolsFocusId:null;
+  const activeId=gesture?.card.id || toolPress?.cardId || editingId || selectedId;
+  const active=editorWanted && editorArmed?current.get(activeId):null;
+  current.forEach(card=>card.element.classList.toggle('active',card===active));
+  toolsId=active?active.id:null;
+  if(!active){tools.style.display='none';reportRegions();return;}
+  tools.style.display='flex';
+  if(document.activeElement!==sizeInput)sizeInput.value=String(active.fontSize);
+  colorButtons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.color===active.color)));
+  editHint.textContent=slideshow?'编辑中：点框外只收起边框；再点空白才推进放映。也可点“完成调整”或按 Esc。':'点“完成调整”、按 Esc 或点框外收起边框，保留文字。';
+  const width=Math.min(508,Math.max(44,screenBounds.width-8));
+  tools.style.width=width+'px';
+  const height=tools.getBoundingClientRect().height;
+  // A transient editing control may sit outside the text box; it never expands it.
+  let left=active.rect.x+active.rect.width-width;
+  let top=active.rect.y-height-4;
+  if(top<screenBounds.y)top=active.rect.y+active.rect.height+4;
+  if(top+height>screenBounds.y+screenBounds.height)top=active.rect.y+4;
+  left=clamp(left,screenBounds.x,screenBounds.x+screenBounds.width-width);
+  top=clamp(top,screenBounds.y,screenBounds.y+screenBounds.height-height);
+  tools.style.left=(left-screenBounds.x)+'px';tools.style.top=(top-screenBounds.y)+'px';
+  reportRegions();
+}
+function controlCard(control){
+  const pressed=toolPress && toolPress.control===control?toolPress.cardId:null;
+  return current.get(pressed || toolsFocusId || toolsId);
+}
+function setFont(value,card=current.get(toolsFocusId || toolsId)){
+  if(!card || !finite(value))return;
+  card.fontSize=clamp(Math.round(value),8,128);card.changedFont=true;
+  sizeInput.value=String(card.fontSize);selectedId=card.id;updateBox(card);reportRegions(true);
+}
+document.getElementById('smaller').addEventListener('click',event=>{const card=controlCard(event.currentTarget);if(card)setFont(card.fontSize-1,card);});
+document.getElementById('larger').addEventListener('click',event=>{const card=controlCard(event.currentTarget);if(card)setFont(card.fontSize+1,card);});
+colorButtons.forEach(button=>button.addEventListener('click',()=>{
+  const card=controlCard(button),color=validColor(button.dataset.color);
+  if(!card || !color)return;
+  card.color=color;card.changedColor=true;selectedId=card.id;updateBox(card);reportRegions(true);
+}));
+document.getElementById('return-panel').addEventListener('click',async event=>{
+  const card=controlCard(event.currentTarget),generation=requestId;
+  if(!card)return;
+  selectedId=card.id;
+  // Save the final geometry, font and color before the main process opens the panel.
+  const saved=await reportRegions(true);
+  if(requestId!==generation || saved?.ok===false)return;
+  await action({action:'panel'});
+});
+document.getElementById('finish-edit').addEventListener('click',()=>finishEditing());
+sizeInput.addEventListener('change',()=>{if(sizeInput.value.trim())setFont(Number(sizeInput.value),controlCard(sizeInput));});
+sizeInput.addEventListener('blur',updateChrome);
+sizeInput.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();if(sizeInput.value.trim())setFont(Number(sizeInput.value));sizeInput.blur();}});
+tools.addEventListener('pointerenter',()=>{clearHoverTimer();pointer(true);});
+tools.addEventListener('pointerleave',()=>{
+  clearHoverTimer();hoverTimer=setTimeout(()=>{hoverId=null;updateChrome();},150);
+});
+tools.addEventListener('focusin',()=>{if(current.has(toolsId)){toolsFocusId=toolPress?.cardId || toolsId;selectedId=toolsFocusId;}});
+tools.addEventListener('focusout',event=>{if(!tools.contains(event.relatedTarget)){toolsFocusId=null;updateChrome();}});
+tools.addEventListener('pointerdown',event=>{
+  event.stopPropagation();
+  if(!event.isPrimary || event.button!==0)return;
+  const card=current.get(toolsId),control=event.target.closest('button,input');
+  if(card && control){clearHoverTimer();toolPress={pointerId:event.pointerId,cardId:card.id,control};selectedId=card.id;}
+});
+window.addEventListener('pointerup',event=>{
+  const pressed=toolPress;
+  if(!pressed || pressed.pointerId!==event.pointerId)return;
+  // Native click is dispatched before this timer; keep its original box until then.
+  setTimeout(()=>{if(toolPress===pressed){toolPress=null;updateChrome();}},0);
+});
+window.addEventListener('pointercancel',event=>{if(toolPress?.pointerId===event.pointerId){toolPress=null;updateChrome();}});
+dismissLayer.addEventListener('pointerdown',event=>{
+  event.preventDefault();event.stopPropagation();
+  if(!slideshow || !editorWanted || !event.isPrimary || event.button!==0)return;
+  dismissGesture={pointerId:event.pointerId,generation:requestId};editorArmed=false;
+  dismissLayer.setPointerCapture(event.pointerId);updateChrome();
+  // Keep editorWanted true and the native backdrop armed until pointer UP.
+});
+function endDismiss(event){
+  if(!dismissGesture || dismissGesture.pointerId!==event.pointerId)return;
+  event.preventDefault();event.stopPropagation();
+  dismissGesture=null;
+  if(dismissLayer.hasPointerCapture(event.pointerId))dismissLayer.releasePointerCapture(event.pointerId);
+  finishEditing({restoreFocus:event.type!=='pointercancel'});
+}
+dismissLayer.addEventListener('pointerup',endDismiss);
+dismissLayer.addEventListener('pointercancel',endDismiss);
+dismissLayer.addEventListener('lostpointercapture',event=>{
+  if(dismissGesture?.pointerId===event.pointerId){dismissGesture=null;finishEditing({restoreFocus:false});}
+});
+for(const type of ['mousedown','mouseup','click','dblclick','contextmenu','wheel']){
+  dismissLayer.addEventListener(type,event=>{event.preventDefault();event.stopPropagation();},{passive:false});
+}
+function startGesture(card,event,corner){
+  if(!isCurrent(card) || !event.isPrimary || event.button!==0)return;
+  // Finish an edit on the old box before a deliberate drag selects another one.
+  if(tools.contains(document.activeElement))document.activeElement.blur();
+  const alreadyEditing=editorWanted && selectedId===card.id;
+  event.preventDefault();clearHoverTimer();toolsFocusId=null;toolPress=null;selectedId=card.id;hoverId=null;
+  gesture={card,pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,start:{...card.rect},corner};
+  card.element.setPointerCapture(event.pointerId);pointer(true);
+  if(!alreadyEditing)beginEditing(card);else updateChrome();
+  card.element.focus({preventScroll:true});reportRegions(true);
+}
+function nearestCorner(card,event){
+  const x=screenBounds.x+event.clientX,y=screenBounds.y+event.clientY;
+  const horizontal=x<card.rect.x+card.rect.width/2?'w':'e';
+  const vertical=y<card.rect.y+card.rect.height/2?'n':'s';
+  return vertical+horizontal;
+}
+function moveGesture(card,event){
+  if(!isCurrent(card) || !gesture || gesture.card!==card || gesture.pointerId!==event.pointerId)return;
+  event.preventDefault();
+  const {start,corner}=gesture,dx=event.clientX-gesture.startX,dy=event.clientY-gesture.startY;
+  if(!corner){card.rect={...start,x:start.x+dx,y:start.y+dy};}
+  else{
+    const minWidth=Math.min(40,start.width),minHeight=Math.min(24,start.height);
+    let left=start.x,top=start.y,right=start.x+start.width,bottom=start.y+start.height;
+    if(corner.includes('w'))left=clamp(start.x+dx,screenBounds.x,right-minWidth);
+    if(corner.includes('e'))right=clamp(start.x+start.width+dx,left+minWidth,screenBounds.x+screenBounds.width);
+    if(corner.includes('n'))top=clamp(start.y+dy,screenBounds.y,bottom-minHeight);
+    if(corner.includes('s'))bottom=clamp(start.y+start.height+dy,top+minHeight,screenBounds.y+screenBounds.height);
+    card.rect={x:left,y:top,width:right-left,height:bottom-top};
+  }
+  card.moved=true;updateBox(card);
+}
+function endGesture(card,event){
+  if(!gesture || gesture.card!==card || gesture.pointerId!==event.pointerId)return;
+  gesture=null;
+  if(card.element.hasPointerCapture(event.pointerId))card.element.releasePointerCapture(event.pointerId);
+  updateChrome();reportRegions(true);
+  scheduleOverflow(card);
+  if(finishAfterPointer)finishEditing({restoreFocus:finishRestoreFocus});
+}
+function resetLocal(){
+  ++editSerial;editorWanted=false;editorArmed=false;dismissGesture=null;finishAfterPointer=false;finishRestoreFocus=false;escapeHeld=false;
+  updateDismissLayer();
+  gesture=null;current=new Map();container.replaceChildren();selectedId=null;hoverId=null;toolsId=null;toolsFocusId=null;toolPress=null;
+  tools.style.display='none';requestId=null;revision=null;clearHoverTimer();
+  if(regionFrame!==null){cancelAnimationFrame(regionFrame);regionFrame=null;}
+  if(overflowFrame!==null){cancelAnimationFrame(overflowFrame);overflowFrame=null;}overflowIds.clear();
+}
+function createCard(value,index,reuse,warning){
+  const id=String(value.id==null?index:value.id),previous=current.get(id),rect=value.rect||{};
+  if(![rect.x,rect.y,rect.width,rect.height].every(finite) || rect.width<=0 || rect.height<=0)return null;
+  const card={id,text:String(value.text||''),rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},
+    sourceRect:{...rect},screenBounds:{...screenBounds},task,
+    sourceIndex:Number.isInteger(value.sourceIndex) && value.sourceIndex>=0?value.sourceIndex:undefined,
+    fontSize:clamp(finite(value.fontSize)?value.fontSize:22,8,128),tone:value.tone==='dark'?'dark':'light',
+    color:validColor(value.color) || (value.tone==='dark'?'#FFFFFF':'#000000'),
+    warning:String(value.warning||warning||''),moved:false,changedFont:false,changedColor:false};
+  const reusable=reuse && previous && previous.task===task && sameRect(previous.screenBounds,screenBounds) && sameRect(previous.sourceRect,rect);
+  if(reusable && previous.moved){card.rect={...previous.rect};card.moved=true;}
+  if(reusable && previous.changedFont){card.fontSize=previous.fontSize;card.changedFont=true;}
+  if(reusable && previous.changedColor){card.color=previous.color;card.changedColor=true;}
+  const element=document.createElement('section');card.element=element;element.tabIndex=0;
+  element.className='text-box'+(card.tone==='dark'?' dark':'');
+  element.setAttribute('role','group');element.setAttribute('aria-label',task==='translate'
+    ?(card.sourceIndex===undefined?'译文文本框':'区域'+(card.sourceIndex+1)+'译文文本框'):'回答文本框');
+  if(card.warning)element.setAttribute('aria-description',card.warning);
+  const text=document.createElement('div');text.className='text';window.PPTText.applyTextStyle(text);text.innerHTML=window.PPTText.renderMath(card.text);
+  const outline=document.createElement('div');outline.className='outline';element.append(text,outline);
+  for(const corner of ['nw','ne','sw','se']){
+    const handle=document.createElement('div');handle.className='resize-handle';handle.dataset.corner=corner;
+    handle.setAttribute('aria-hidden','true');element.appendChild(handle);
+  }
+  element.addEventListener('pointerenter',()=>{pointer(true);});
+  element.addEventListener('pointerleave',()=>{
+    if(!gesture)pointer(false);
+  });
+  element.addEventListener('focusin',()=>{
+    if(!isCurrent(card))return;
+    toolsFocusId=null;toolPress=null;
+    if(!editorWanted || selectedId!==card.id)beginEditing(card);else updateChrome();
+  });
+  element.addEventListener('pointerdown',event=>startGesture(card,event,event.target.closest('.resize-handle')?nearestCorner(card,event):null));
+  element.addEventListener('pointermove',event=>moveGesture(card,event));
+  element.addEventListener('pointerup',event=>endGesture(card,event));
+  element.addEventListener('pointercancel',event=>endGesture(card,event));
+  element.addEventListener('lostpointercapture',()=>{if(gesture?.card===card){gesture=null;updateChrome();reportRegions(true);scheduleOverflow(card);if(finishAfterPointer)finishEditing({restoreFocus:finishRestoreFocus});}});
+  element.addEventListener('keydown',event=>{
+    if(event.target!==element)return;
+    if(event.key==='Enter' || event.key===' '){event.preventDefault();event.stopPropagation();if(!editorWanted || selectedId!==card.id)beginEditing(card);return;}
+    if(!editorWanted || !editorArmed || selectedId!==card.id)return;
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)){
+      event.preventDefault();selectedId=card.id;
+      const delta=event.altKey?1:4;
+      if(event.shiftKey){
+        if(event.key==='ArrowLeft')card.rect.width=Math.max(Math.min(40,card.rect.width),card.rect.width-delta);
+        if(event.key==='ArrowRight')card.rect.width+=delta;
+        if(event.key==='ArrowUp')card.rect.height=Math.max(Math.min(24,card.rect.height),card.rect.height-delta);
+        if(event.key==='ArrowDown')card.rect.height+=delta;
+      }else{
+        if(event.key==='ArrowLeft')card.rect.x-=delta;if(event.key==='ArrowRight')card.rect.x+=delta;
+        if(event.key==='ArrowUp')card.rect.y-=delta;if(event.key==='ArrowDown')card.rect.y+=delta;
+      }
+      card.moved=true;updateBox(card);reportRegions(true);
+    }
+  });
+  return card;
+}
+window.m1.onOverlay(payload=>{
+  if(!payload || !Array.isArray(payload.cards))return;
+  const nextId=payload.requestId==null?null:String(payload.requestId),nextTask=payload.task==='translate'?'translate':'ask';
+  if(overflowFrame!==null){cancelAnimationFrame(overflowFrame);overflowFrame=null;}overflowIds.clear();
+  const reuse=nextTask===task && nextId!==null && nextId===requestId;
+  ++editSerial;editorWanted=false;editorArmed=false;dismissGesture=null;finishAfterPointer=false;finishRestoreFocus=false;escapeHeld=false;
+  const bounds=payload.screenBounds;
+  if(bounds && [bounds.x,bounds.y,bounds.width,bounds.height].every(finite) && bounds.width>0 && bounds.height>0)screenBounds={...bounds};
+  task=nextTask;requestId=nextId;revision=payload.revision??nextId;gesture=null;toolsFocusId=null;toolPress=null;
+  slideshow=payload.showing===true;updateDismissLayer();
+  if(!reuse){selectedId=null;hoverId=null;clearHoverTimer();}
+  const next=new Map();
+  payload.cards.forEach((value,index)=>{if(value && typeof value==='object'){const card=createCard(value,index,reuse,payload.warning||payload.notice);if(card)next.set(card.id,card);}});
+  current=next;container.replaceChildren(...Array.from(current.values()).map(card=>card.element));
+  current.forEach(card=>updateBox(card,false));updateChrome();reportRegions(true);pointer(false);
+});
+window.m1.onClear(resetLocal);
+window.addEventListener('resize',()=>{current.forEach(card=>updateBox(card,false));updateChrome();reportRegions();});
+window.addEventListener('blur',()=>{
+  const interrupted=gesture;gesture=null;
+  if(interrupted){
+    try{
+      if(interrupted.card.element.hasPointerCapture(interrupted.pointerId))interrupted.card.element.releasePointerCapture(interrupted.pointerId);
+    }catch(_){}
+    scheduleOverflow(interrupted.card);
+  }
+  const dismissed=dismissGesture;dismissGesture=null;escapeHeld=false;
+  if(dismissed && dismissLayer.hasPointerCapture(dismissed.pointerId))dismissLayer.releasePointerCapture(dismissed.pointerId);
+  finishEditing({restoreFocus:false});pointer(false);
+});
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape' && (editorWanted || gesture || dismissGesture || escapeHeld)){
+    event.preventDefault();event.stopImmediatePropagation();
+    // Retain the restore intent if Esc is released before an active drag ends;
+    // restoreSlideshowFocus itself waits until the physical Escape key is up.
+    escapeHeld=true;finishEditing({restoreFocus:true});
+  }
+});
+document.addEventListener('keyup',async event=>{
+  if(event.key!=='Escape' || !escapeHeld)return;
+  event.preventDefault();event.stopImmediatePropagation();escapeHeld=false;
+  const generation=requestId;
+  const saved=await reportRegions(true);
+  if(saved?.ok!==false && !editorWanted)await restoreSlideshowFocus(generation);
+});
+</script></body></html>
+
